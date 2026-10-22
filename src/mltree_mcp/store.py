@@ -89,6 +89,20 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scan_state (      -- what scan_project last wrote for a step
+    step       TEXT PRIMARY KEY,
+    script_path TEXT,
+    fields     TEXT NOT NULL,                  -- JSON of the fields as written by the scan
+    scanned_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS imports (         -- external results already imported as runs
+    key         TEXT PRIMARY KEY,
+    run_id      TEXT,
+    source      TEXT NOT NULL,
+    imported_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_step    ON runs(step, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_parent  ON runs(parent_run_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
@@ -246,6 +260,9 @@ class Store:
             # Fresh clone with only pipeline.yaml committed: rebuild the index.
             self._create_db()
             self._import_yaml()
+        elif not getattr(self, "_schema_ok", False):
+            self._create_db()  # idempotent; adds tables introduced by newer versions
+        self._schema_ok = True
 
     # -------------------------------------------------------------- project
 
@@ -906,3 +923,30 @@ class Store:
             "differing_params": [k for k in pkeys if differs(k, "params")],
             "differing_metrics": [k for k in mkeys if differs(k, "metrics")],
         }
+
+    # ------------------------------------------------------ scan helpers
+
+    def scan_state(self) -> dict[str, dict[str, Any]]:
+        self._require()
+        with self._conn() as c:
+            return {r["step"]: {"script_path": r["script_path"], "fields": json.loads(r["fields"])}
+                    for r in c.execute("SELECT * FROM scan_state")}
+
+    def set_scan_state(self, step: str, script_path: str | None, fields: dict[str, Any]) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO scan_state(step, script_path, fields, scanned_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(step) DO UPDATE SET script_path=excluded.script_path, fields=excluded.fields, "
+                "scanned_at=excluded.scanned_at",
+                (step, script_path, json.dumps(fields, sort_keys=True), utcnow()),
+            )
+
+    def imported_keys(self) -> set[str]:
+        self._require()
+        with self._conn() as c:
+            return {r["key"] for r in c.execute("SELECT key FROM imports")}
+
+    def mark_imported(self, key: str, run_id: str | None, source: str) -> None:
+        with self._conn() as c:
+            c.execute("INSERT OR IGNORE INTO imports(key, run_id, source, imported_at) VALUES (?,?,?,?)",
+                      (key, run_id, source, utcnow()))

@@ -2,5 +2,5 @@
 
 from .store import MLTreeError, ProjectNotInitialized, Store, resolve_project_root
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["Store", "MLTreeError", "ProjectNotInitialized", "resolve_project_root", "__version__"]

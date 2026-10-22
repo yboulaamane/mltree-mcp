@@ -29,11 +29,16 @@ except ImportError:  # MCP Python SDK 1.x
 
 INSTRUCTIONS = """\
 mltree records an ML workflow as a node graph (steps + edges) and every experiment as a run in a tree.
-Use it as you work: call init_project once per repo; call add_step whenever you create or change a
-pipeline script (one script per step, e.g. steps/split.py); call connect_steps to wire data flow; call
-log_run after every execution with its params and metrics (use parent_run_id when a run is a variation
-of an earlier one, e.g. an HPO trial). Call open_map to give the user the viewer URL. Call get_pipeline before changing the workflow, and best_run /
-list_runs to answer questions about experiments. Paths are relative to the project root.
+FIRST, on an existing project (scripts or notebooks already there, but no .mltree/ map yet, or get_pipeline is
+empty), call scan_project: it statically parses the code (never runs it), proposes steps, edges, params and imports
+existing results (metrics files, MLflow, Optuna, Lightning, wandb) as runs tagged 'imported'. Use dry_run=true to
+preview. Then review its summary and fix wrong edges/kinds with connect_steps / add_step; re-scanning later keeps
+those edits. On a new project call init_project.
+Use it as you work: call add_step whenever you create or change a pipeline script (one script per step, e.g.
+steps/split.py); call connect_steps to wire data flow; call log_run after every execution with its params and metrics
+(use parent_run_id when a run is a variation of an earlier one, e.g. an HPO trial). Call open_map to give the user
+the viewer URL. Call get_pipeline before changing the workflow, and best_run / list_runs to answer questions about
+experiments. Paths are relative to the project root.
 """
 
 mcp = _ServerCls("mltree", instructions=INSTRUCTIONS)
@@ -203,6 +208,31 @@ def _open_map(start: bool = True, port: int | None = None) -> dict[str, Any]:
     return result
 
 
+@mcp.tool()
+def scan_project(
+    path: Annotated[str, Field(description="Folder to scan, relative to the project root")] = ".",
+    include: Annotated[list[str] | None, Field(description="Glob patterns to scan (default **/*.py, **/*.ipynb)")] = None,
+    exclude: Annotated[
+        list[str] | None,
+        Field(description="Glob patterns to skip (default: venvs, .git, tests, __pycache__, .mltree, build dirs)"),
+    ] = None,
+    dry_run: Annotated[bool, Field(description="Return the proposed map without writing anything")] = False,
+    notebook_sections: Annotated[bool, Field(description="Make each markdown-headed notebook section a step")] = False,
+    import_results: Annotated[bool, Field(description="Import existing metrics/MLflow/Optuna/Lightning/wandb results as runs")] = True,
+) -> dict[str, Any]:
+    """Build the map of an EXISTING project by static analysis (ast only; user code is never executed).
+
+    Detects data reads/writes, argparse/click params, local imports, docstrings and step kinds, links steps whose
+    output paths match other steps' inputs (falling back to file numbering and imports), and imports existing
+    results as runs tagged 'imported'. Idempotent: re-scans update scanner-owned fields, add new steps, never delete,
+    and keep edits made with add_step. Review the returned summary and fix it with connect_steps / add_step.
+    """
+    from .scan import scan_project as _scan
+
+    return _call(lambda: _scan(_store(), path=path, include=include, exclude=exclude, dry_run=dry_run,
+                               notebook_sections=notebook_sections, import_results=import_results))
+
+
 # ---------------------------------------------------------------- resources
 
 
@@ -237,6 +267,14 @@ def main(argv: list[str] | None = None) -> None:
     v.add_argument("--project", dest="view_project", help="Project directory")
     v.add_argument("--host", default=None, help="Bind address (default 127.0.0.1; use 0.0.0.0 only on trusted networks)")
     v.add_argument("--port", type=int, default=None, help="Port (default 8765)")
+    sc = sub.add_parser("scan", help="Statically scan an existing project and write its map to .mltree/")
+    sc.add_argument("--project", dest="view_project", help="Project directory")
+    sc.add_argument("--path", default=".", help="Sub-folder to scan (default: the whole project)")
+    sc.add_argument("--dry-run", action="store_true", help="Show the proposed map without writing anything")
+    sc.add_argument("--notebook-sections", action="store_true", help="One step per markdown-headed notebook section")
+    sc.add_argument("--no-results", action="store_true", help="Do not import existing results as runs")
+    sc.add_argument("--exclude", action="append", default=None, help="Extra glob to skip (repeatable)")
+    sc.add_argument("--json", action="store_true", help="Print the full JSON summary")
     args = parser.parse_args(argv)
 
     project = getattr(args, "view_project", None) or args.project
@@ -247,6 +285,19 @@ def main(argv: list[str] | None = None) -> None:
             print(f"mltree-mcp: {exc}", file=sys.stderr)
             raise SystemExit(2)
 
+    if args.command == "scan":
+        from .scan import DEFAULT_EXCLUDE, format_summary
+        from .scan import scan_project as _scan
+
+        try:
+            summary = _scan(_store(), path=args.path, dry_run=args.dry_run, notebook_sections=args.notebook_sections,
+                            import_results=not args.no_results,
+                            exclude=DEFAULT_EXCLUDE + args.exclude if args.exclude else None)
+        except MLTreeError as exc:
+            print(f"mltree-mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        print(json.dumps(summary, indent=2) if args.json else format_summary(summary))
+        return
     if args.command == "view":
         from .viewer import DEFAULT_HOST, DEFAULT_PORT, serve
 

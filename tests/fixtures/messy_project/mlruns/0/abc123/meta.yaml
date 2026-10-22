@@ -1,0 +1,6 @@
+run_id: abc123
+run_name: mlp-baseline
+status: 3
+start_time: 1760000000000
+end_time: 1760000060000
+experiment_id: '0'

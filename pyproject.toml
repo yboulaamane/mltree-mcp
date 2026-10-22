@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mltree-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "An MCP server that maps your ML / GNN workflow as a node graph and records every experiment as a branching tree, while Codex or Claude Code works."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -48,4 +48,5 @@ exclude = ["frontend/node_modules", "docs/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["tests/fixtures", "frontend", "node_modules", ".*"]
 asyncio_mode = "auto"

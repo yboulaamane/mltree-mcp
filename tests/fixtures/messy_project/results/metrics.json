@@ -1,0 +1,1 @@
+{"rmse": 0.71, "r2": 0.64, "model": "mlp", "per_fold": {"fold0": 0.70, "fold1": 0.72}}

@@ -15,7 +15,7 @@ Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp v
 
 ![Experiment tree](docs/screenshot-tree.png)
 
-> Status: **0.2.0**. Phase 1 (MCP core) and Phase 2 (map viewer) are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
+> Status: **0.3.0**. Phase 1 (MCP core), Phase 2 (map viewer) and Phase 3 (`scan_project` for existing projects) are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
 
 ## Install
 
@@ -89,6 +89,71 @@ startup_timeout_sec = 20   # first uvx run downloads dependencies
 
 In the Codex TUI, `/mcp` lists active servers. Codex also reads the server's built-in `instructions`, which tell it when to call each tool.
 
+## Use it on an existing project over SSH with Codex
+
+You already have a project on a GPU server: numbered scripts, a `utils.py`, a notebook or two, some `metrics.json`
+files, maybe `mlruns/` or an Optuna study. `scan_project` builds the map from that code **without running any of it**.
+It parses scripts with Python's `ast` and reads notebooks as JSON.
+
+**1. Install on the server** (once):
+
+```bash
+ssh you@server
+pip install --user "git+https://github.com/yboulaamane/mltree-mcp"   # or: uv tool install git+https://github.com/yboulaamane/mltree-mcp
+mltree-mcp --version
+```
+
+**2. Register it with Codex on the server**, pinned to the project:
+
+```bash
+codex mcp add mltree -- mltree-mcp --project /path/to/your/project
+```
+
+**3. Ask Codex to scan it.** Start `codex` in the project and say:
+
+> Scan this project with mltree and show me the map. Fix anything the scan got wrong.
+
+Codex calls `scan_project` (the server instructions tell it to do this first on an existing project). It reviews
+the summary and corrects edges or kinds with `connect_steps` / `add_step`. You can also scan from the shell:
+
+```bash
+mltree-mcp scan --project /path/to/your/project --dry-run   # preview, writes nothing
+mltree-mcp scan --project /path/to/your/project             # write .mltree/
+```
+
+**4. Look at it from your laptop.** On the server:
+
+```bash
+mltree-mcp view --project /path/to/your/project      # serves on localhost:8765 on the server
+```
+
+On your laptop:
+
+```bash
+ssh -L 8765:localhost:8765 you@server
+# then open http://localhost:8765
+```
+
+### What the scan detects
+
+| Signal | How |
+| --- | --- |
+| Data reads / writes | `pd.read_*` / `.to_*`, `open()` (by mode), `np.load/save`, `torch.load/save`, `joblib`, `pickle`, `json`, `yaml`, `Path.read_*/write_*`, `h5py`, `shutil.copy`, RDKit / PyG loaders, project helpers such as `load("x.json")` / `save(obj, "y.pkl")`. Paths are folded from string constants, f-strings, `Path(__file__).parent / "data"`, `os.path.join`, and argparse / click defaults. |
+| Params | argparse `add_argument` and click `@option` defaults, `sys.argv[...] if ... else default`, UPPERCASE numeric constants, and literal kwargs like `test_size`, `random_state`, `n_trials`, `lr`, `epochs`. |
+| Description | The module docstring, or the notebook's first markdown heading. |
+| Kind | `data / clean / split / featurize / hpo / train / eval`, from the file name, imports and calls. For example, `optuna.create_study` gives hpo, `train_test_split` gives split, `.fit` or `optimizer.step()` gives train, and `sklearn.metrics` gives eval. |
+| Utilities | A helper module such as `utils.py` (imported, with no entry point and no I/O) is not a step. It is noted in the description of each step that uses it. |
+| Edges | 1) one step's output path matches another's input (exact, glob, or folder); 2) imports of other step modules; 3) notebook section order; 4) file numbering (`01_`, `step2_`) for steps that have no other upstream. Cycles are never added. |
+| Notebooks | One step per notebook, or one step per markdown-headed section with `notebook_sections=true`. Magics are ignored. |
+| Existing results → runs tagged `imported` | `*metrics*.json` / `*results*.csv` style files; MLflow `mlruns/` (params, last metric values, status); Optuna SQLite studies (one parent run per study, trials as child runs, categorical params decoded, read-only); Lightning `lightning_logs/version_*` (hparams + last `metrics.csv` values); wandb offline runs (summary + config). TensorBoard event files are noted but not parsed. |
+
+Re-scanning is safe. Steps the scanner owns are refreshed, new scripts become new steps, and nothing is deleted.
+A step you or the assistant edited with `add_step` keeps its description, kind and param values; the scan only adds
+new inputs, outputs and param keys. Results are imported once (they are keyed by source). The summary lists new,
+updated, merged and unchanged steps, edges, inputs no step produces, outputs no step consumes, skipped files, and
+imported runs. Default excludes: virtualenvs, `.git`, `tests/`, `test_*.py`, `__pycache__`, `.mltree`,
+`node_modules`, `build/`, `dist/`.
+
 ## The map viewer
 
 ```bash
@@ -145,6 +210,7 @@ Use `--host 0.0.0.0` only on a network you trust. The viewer has no authenticati
 
 | Tool | What the assistant uses it for |
 | --- | --- |
+| `scan_project(path=".", include?, exclude?, dry_run=False, notebook_sections=False, import_results=True)` | Build the map of an **existing** project by static analysis (never runs your code): steps, params, edges, utilities, and existing results imported as runs. Idempotent; `dry_run` previews. See [above](#use-it-on-an-existing-project-over-ssh-with-codex). |
 | `init_project(name?)` | Create `.mltree/` (pipeline.yaml, mltree.db, runs/) in the project. Idempotent. |
 | `add_step(name, script_path?, inputs?, outputs?, params?, description?)` | Register a node, or update it if the name exists. Script paths are relative to the project and may not escape it. |
 | `connect_steps(source, target, label?)` | Add an edge. Both steps must exist; self-loops and cycles are rejected; warns when outputs and inputs don't match. |
@@ -185,7 +251,8 @@ Codex reads `AGENTS.md`, Claude Code reads `CLAUDE.md`. Paste this into either:
 
 This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up to date as you work:
 
-- At the start, call `get_pipeline` (call `init_project` if it says the project is not initialized).
+- At the start, call `get_pipeline`. If the project is not initialized and already has code, call `scan_project`
+  (`dry_run=true` first to preview) and fix its proposals; for a brand-new project call `init_project`.
 - Put each pipeline stage in its own script under `steps/` (e.g. `steps/split.py`, `steps/train_gcn.py`).
   Whenever you create or materially change one, call `add_step` with its name, `script_path`,
   `inputs`, `outputs`, default `params` and a one-line `description`.
@@ -242,9 +309,10 @@ Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, s
 
 1. **MCP core** ✅
 2. **Map viewer** ✅ (map, script panel with run snapshots, experiment tree, compare, live refresh)
-3. `run_step` with caching and live logs; `fork_run` / `compare_runs` tools; loss curves
-4. Optuna trials as branches; RDKit / PyG starter steps (GCN, GAT)
-5. PyPI release, Claude Code plugin bundle with slash commands, demo site
+3. **`scan_project`** ✅ (static import of existing projects and their MLflow / Optuna / Lightning / wandb results)
+4. `run_step` with caching and live logs; `fork_run` / `compare_runs` tools; loss curves
+5. Optuna-callback trials as live branches; RDKit / PyG starter steps (GCN, GAT)
+6. PyPI release, Claude Code plugin bundle with slash commands, demo site
 
 ## License
 
