@@ -1,0 +1,36 @@
+"""Step 4 - train a toy 'GCN': one round of mean neighbour aggregation, sum pooling,
+then ridge regression on the pooled features (closed form, stdlib only).
+
+Swap this file for a real PyTorch Geometric GCN later; the node in the map stays the same.
+Usage: python train.py [alpha]
+"""
+import sys
+
+from _common import embed, load, save
+
+alpha = float(sys.argv[1]) if len(sys.argv) > 1 else 1.0
+
+
+def solve(A: list[list[float]], b: list[float]) -> list[float]:
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        for r in range(n):
+            if r != c and M[c][c]:
+                f = M[r][c] / M[c][c]
+                M[r] = [a - f * bb for a, bb in zip(M[r], M[c])]
+    return [M[i][n] / M[i][i] if M[i][i] else 0.0 for i in range(n)]
+
+
+train = load("train.json")
+X = [embed(g) for g in train]
+y = [g["y"] for g in train]
+d = len(X[0])
+XtX = [[sum(r[i] * r[j] for r in X) + (alpha if i == j else 0.0) for j in range(d)] for i in range(d)]
+Xty = [sum(r[i] * t for r, t in zip(X, y)) for i in range(d)]
+w = solve(XtX, Xty)
+save("model.json", {"weights": w, "alpha": alpha})
+rmse = (sum((sum(a * b for a, b in zip(r, w)) - t) ** 2 for r, t in zip(X, y)) / len(y)) ** 0.5
+print(f"train_rmse={rmse:.3f} alpha={alpha}")

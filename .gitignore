@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# mltree stores created while running the demo or tests.
+# In your own projects you will usually COMMIT .mltree/pipeline.yaml
+# and decide yourself whether to commit mltree.db and runs/.
+examples/**/.mltree/
+examples/**/data/processed/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
