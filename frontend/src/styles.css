@@ -116,3 +116,31 @@ table.compare tr.diff th { color: var(--fg); } table.compare tr.diff th::before 
 .react-flow__minimap { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .react-flow__minimap-mask { fill: color-mix(in srgb, var(--bg) 70%, transparent); }
 .react-flow__controls button { background: var(--card); color: var(--fg); border-color: var(--border); }
+
+/* export menu */
+.menu-wrap { position: relative; }
+.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; min-width: 290px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+.menu button { border: 0; background: transparent; text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 7px 10px; }
+.menu button:hover:not(:disabled) { background: var(--panel); }
+.menu button span { color: var(--muted); font-size: 12px; }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
+.menu-err { color: var(--s-failed, #ef4444); font-size: 12px; padding: 4px 10px; }
+.live.snapshot { border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; }
+
+/* lightweight code view (exports) */
+.code-lite { display: flex; height: 100%; overflow: auto; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.code-lite pre { margin: 0; padding: 8px 10px; }
+.code-lite .gutter { color: var(--muted); text-align: right; user-select: none; opacity: .7; border-right: 1px solid var(--border); position: sticky; left: 0; background: var(--card); }
+.code-lite .src { flex: 1; white-space: pre-wrap; word-break: break-word; }
+.tok-k { color: #8b5cf6; } .tok-s { color: #059669; } .tok-c { color: #94a3b8; font-style: italic; } .tok-n { color: #d97706; }
+.tok-f { color: #2563eb; } .tok-d { color: #db2777; } .tok-b { color: #0891b2; }
+[data-theme="dark"] .tok-k { color: #c4b5fd; } [data-theme="dark"] .tok-s { color: #6ee7b7; } [data-theme="dark"] .tok-f { color: #93c5fd; }
+[data-theme="dark"] .tok-n { color: #fcd34d; } [data-theme="dark"] .tok-d { color: #f9a8d4; } [data-theme="dark"] .tok-b { color: #67e8f9; }
+
+/* lightweight bar chart (exports) */
+.plot-lite svg .grid { stroke: var(--border); } .plot-lite svg text { fill: var(--fg); font-size: 11px; } .plot-lite svg .t { font-size: 13px; }
+.plot-lite svg .ax { fill: var(--muted); }
+.legend-lite { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; font-size: 12px; }
+.legend-lite i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.plot.plot-lite { height: auto; }

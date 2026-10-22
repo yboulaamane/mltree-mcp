@@ -1,17 +1,18 @@
 {
   "name": "mltree-viewer",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --mode export",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
     "@dagrejs/dagre": "^1.1.4",
     "@monaco-editor/react": "^4.7.0",
     "@xyflow/react": "^12.3.6",
+    "html-to-image": "^1.11.13",
     "monaco-editor": "^0.52.2",
     "plotly.js-basic-dist-min": "^2.35.3",
     "react": "^18.3.1",

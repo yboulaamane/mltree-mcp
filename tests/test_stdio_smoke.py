@@ -5,7 +5,7 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-EXPECTED = {"init_project", "add_step", "connect_steps", "get_pipeline", "log_run", "list_runs", "best_run", "open_map", "scan_project"}
+EXPECTED = {"init_project", "add_step", "connect_steps", "get_pipeline", "log_run", "list_runs", "best_run", "open_map", "scan_project", "export_map"}
 
 
 async def test_stdio_server_lists_and_calls_tools(tmp_path):

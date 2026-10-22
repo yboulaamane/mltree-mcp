@@ -15,6 +15,7 @@ Routes (all JSON unless noted):
     GET  /api/tree[?metric=&mode=min|max&step=]   run forest from parent_run_id + best run
     GET  /api/compare?ids=a,b[,c...]
     GET  /api/metrics                        numeric metric names seen in runs
+    GET  /api/export[?scripts=0|1]          the shareable single-file HTML export (download)
     GET  /api/events                         text/event-stream; "revision" events on every store change
     GET  /*                                  the single-page app (src/mltree_mcp/static)
 """
@@ -124,6 +125,15 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0) ->
     def metrics(_: Request):
         return {"metrics": store().metric_names()}
 
+    def export(request: Request):
+        from .export import build_snapshot, default_filename, render_html
+
+        s = store()
+        scripts = request.query_params.get("scripts", "1").lower() not in ("0", "false", "no")
+        body = render_html(build_snapshot(s, include_scripts=scripts))
+        return Response(body, media_type="text/html; charset=utf-8", headers={
+            "Content-Disposition": f'attachment; filename="{default_filename(s)}"', "Cache-Control": "no-store"})
+
     async def events(request: Request) -> StreamingResponse:
         async def stream():
             last = None
@@ -166,6 +176,7 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0) ->
         Route("/api/tree", handle(tree)),
         Route("/api/compare", handle(compare)),
         Route("/api/metrics", handle(metrics)),
+        Route("/api/export", handle(export)),
         Route("/api/events", events),
         Route("/api/{rest:path}", lambda r: JSONResponse({"error": "Not found"}, status_code=404)),
     ]

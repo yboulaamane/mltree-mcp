@@ -15,7 +15,7 @@ Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp v
 
 ![Experiment tree](docs/screenshot-tree.png)
 
-> Status: **0.3.0**. Phase 1 (MCP core), Phase 2 (map viewer) and Phase 3 (`scan_project` for existing projects) are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
+> Status: **0.4.0**. Phase 1 (MCP core), Phase 2 (map viewer), Phase 3 (`scan_project` for existing projects) and shareable HTML export are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
 
 ## Install
 
@@ -204,12 +204,56 @@ Use `--host 0.0.0.0` only on a network you trust. The viewer has no authenticati
 | `GET /api/tree[?metric=&mode=min\|max&step=]` | run forest (runs, edges, roots) and the best run |
 | `GET /api/compare?ids=a,b[,c]` | runs, param/metric keys and which ones differ |
 | `GET /api/metrics` | numeric metric names |
+| `GET /api/export[?scripts=0\|1]` | the shareable single-file HTML (as a download) |
 | `GET /api/events` | `text/event-stream` of `revision` events |
+
+## Share the map
+
+**Export ▾** in the viewer header gives you:
+
+- **Shareable HTML**: one self-contained `<project>-mltree.html` file. It opens offline in any browser by
+  double-click, with no server, no install and no network requests. It is read-only and includes the workflow map, the step
+  panel with each script (current file and the snapshot stored with every run), the experiment tree and the compare
+  view. It inlines a lighter build of the viewer: a small highlighted code view instead of Monaco and SVG bar
+  charts instead of Plotly. The bundled demo exports to about **450 KB**: ~415 KB of app and the rest data, with
+  scripts deduplicated by SHA-256. [`docs/example-export.html`](docs/example-export.html) is a sample.
+- **Shareable HTML without scripts**: the same file with the code left out.
+- **Map as PNG / SVG**: an image of the current map view (pan and zoom first), for slides and papers.
+
+From the shell or through the assistant:
+
+```bash
+mltree-mcp export --project /path/to/project                    # -> ./<project>-mltree.html
+mltree-mcp export --project /path/to/project -o share/map.html --no-scripts
+```
+
+```text
+export_map(path=None, include_scripts=True)   # MCP tool; returns {"path", "bytes", "size", ...}
+```
+
+The MCP tool writes to `<project root>/<project>-mltree.html` by default. On a remote server, copy the file to
+your machine with `scp you@server:/path/to/project/<project>-mltree.html .`
+
+**Ways to send it**
+
+- **Email or Slack.** Attach the `.html` file. The recipient downloads it and opens it in a browser. (Previews
+  inside Slack or a mail client won't run it; it has to be opened in a browser.)
+- **GitHub Pages.** Commit it as `docs/index.html` (or any `.html` in a Pages-enabled repo) and share the URL.
+- **Gist.** `gh gist create --secret myproj-mltree.html`, then open it through a raw-HTML viewer such as
+  `https://gist.githack.com/` (gist.github.com itself shows HTML as source).
+
+> **Warning: the export contains your scripts.** The default file embeds the full source of every step script and
+> every run's script snapshot, plus params, notes, tags and artifact paths. If any of that is private (unpublished
+> methods, internal paths, credentials someone hard-coded), use **Shareable HTML without scripts**, or
+> `--no-scripts` / `include_scripts=false`, and don't publish the file on a public Pages site or a public gist.
+> The absolute project path on the server is never included. `*-mltree.html` is in this repo's `.gitignore`; add it
+> to yours too so an export isn't committed by accident.
 
 ## Tools
 
 | Tool | What the assistant uses it for |
 | --- | --- |
+| `export_map(path?, include_scripts=True)` | Write the single-file, offline, read-only HTML of the map and return its path and size. It includes the scripts unless `include_scripts=false`. See [Share the map](#share-the-map). |
 | `scan_project(path=".", include?, exclude?, dry_run=False, notebook_sections=False, import_results=True)` | Build the map of an **existing** project by static analysis (never runs your code): steps, params, edges, utilities, and existing results imported as runs. Idempotent; `dry_run` previews. See [above](#use-it-on-an-existing-project-over-ssh-with-codex). |
 | `init_project(name?)` | Create `.mltree/` (pipeline.yaml, mltree.db, runs/) in the project. Idempotent. |
 | `add_step(name, script_path?, inputs?, outputs?, params?, description?)` | Register a node, or update it if the name exists. Script paths are relative to the project and may not escape it. |
@@ -263,7 +307,8 @@ This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up t
   pass that run's id as `parent_run_id` so the experiment tree branches correctly.
 - To answer "which model was best?" use `best_run` (mode "min" for losses/RMSE, "max" for AUC/R²)
   and `list_runs`; don't guess from memory.
-- When the user wants to see the workflow, call `open_map` and give them the URL.
+- When the user wants to see the workflow, call `open_map` and give them the URL. When they want to send it to
+  someone, call `export_map` (warn them that it includes the scripts unless `include_scripts=false`).
 ```
 
 ## Demo: a tiny GNN pipeline

@@ -37,7 +37,8 @@ those edits. On a new project call init_project.
 Use it as you work: call add_step whenever you create or change a pipeline script (one script per step, e.g.
 steps/split.py); call connect_steps to wire data flow; call log_run after every execution with its params and metrics
 (use parent_run_id when a run is a variation of an earlier one, e.g. an HPO trial). Call open_map to give the user
-the viewer URL. Call get_pipeline before changing the workflow, and best_run / list_runs to answer questions about
+the viewer URL, and export_map when they want a single offline HTML file to send someone (it includes the scripts
+unless include_scripts=false). Call get_pipeline before changing the workflow, and best_run / list_runs to answer questions about
 experiments. Paths are relative to the project root.
 """
 
@@ -233,6 +234,25 @@ def scan_project(
                                notebook_sections=notebook_sections, import_results=import_results))
 
 
+@mcp.tool()
+def export_map(
+    path: Annotated[
+        str | None,
+        Field(description="Output file or folder (relative to the project root). Default: <project root>/<project>-mltree.html"),
+    ] = None,
+    include_scripts: Annotated[bool, Field(description="Embed the step scripts and their run snapshots")] = True,
+) -> dict[str, Any]:
+    """Write a single self-contained HTML file of the map (steps, code, runs, experiment tree, compare).
+
+    It opens offline in any browser, read-only, with no server, so the user can email it, post it in Slack or host it
+    on GitHub Pages / a gist. Returns the file path and size. It contains the scripts unless include_scripts=false:
+    tell the user that before they share it.
+    """
+    from .export import export_html
+
+    return _call(lambda: export_html(_store(), path=path, include_scripts=include_scripts, base=resolve_project_root()))
+
+
 # ---------------------------------------------------------------- resources
 
 
@@ -275,6 +295,10 @@ def main(argv: list[str] | None = None) -> None:
     sc.add_argument("--no-results", action="store_true", help="Do not import existing results as runs")
     sc.add_argument("--exclude", action="append", default=None, help="Extra glob to skip (repeatable)")
     sc.add_argument("--json", action="store_true", help="Print the full JSON summary")
+    ex = sub.add_parser("export", help="Write a single self-contained, offline HTML file of the map to share")
+    ex.add_argument("--project", dest="view_project", help="Project directory")
+    ex.add_argument("-o", "--output", default=None, help="Output file or folder (default: ./<project>-mltree.html)")
+    ex.add_argument("--no-scripts", action="store_true", help="Leave the step scripts out of the file")
     args = parser.parse_args(argv)
 
     project = getattr(args, "view_project", None) or args.project
@@ -297,6 +321,18 @@ def main(argv: list[str] | None = None) -> None:
             print(f"mltree-mcp: {exc}", file=sys.stderr)
             raise SystemExit(2)
         print(json.dumps(summary, indent=2) if args.json else format_summary(summary))
+        return
+    if args.command == "export":
+        from .export import export_html
+
+        try:
+            res = export_html(_store(), path=args.output, include_scripts=not args.no_scripts)
+        except MLTreeError as exc:
+            print(f"mltree-mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        print(f"Wrote {res['path']} ({res['size']}; {res['steps']} steps, {res['runs']} runs, "
+              f"{'scripts included' if res['scripts_included'] else 'no scripts'})")
+        print(res["note"])
         return
     if args.command == "view":
         from .viewer import DEFAULT_HOST, DEFAULT_PORT, serve

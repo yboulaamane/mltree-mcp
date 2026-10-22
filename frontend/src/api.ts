@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { offlineApi, offlineData } from "./offline";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -7,6 +8,14 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const offline = offlineData();
+  if (offline) {
+    try {
+      return offlineApi(offline, path, init) as T;
+    } catch (e) {
+      throw new ApiError((e as { status?: number }).status ?? 400, (e as Error).message);
+    }
+  }
   const res = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -21,6 +30,7 @@ export function useRevision(): { revision: number; live: boolean } {
   const [revision, setRevision] = useState(0);
   const [live, setLive] = useState(false);
   useEffect(() => {
+    if (offlineData()) return; // exported snapshot: nothing changes
     let timer: number | undefined;
     const poll = () => {
       timer = window.setInterval(async () => {

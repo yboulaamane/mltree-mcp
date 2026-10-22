@@ -4,6 +4,8 @@ import type { Pipeline } from "./types";
 import MapView from "./MapView";
 import TreeView from "./TreeView";
 import CompareView from "./CompareView";
+import ExportMenu from "./ExportMenu";
+import { offlineData } from "./offline";
 
 type View = "map" | "tree" | "compare";
 export type Theme = "light" | "dark";
@@ -33,6 +35,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [selected, setSelected] = useState<string[]>(() => parseHash().params.get("ids")?.split(",").filter(Boolean) ?? []);
   const { revision, live } = useRevision();
+  const snapshot = offlineData();
   const { data: pipeline, error } = useApi<Pipeline>("/api/pipeline", [revision]);
 
   useEffect(() => {
@@ -90,9 +93,16 @@ export default function App() {
               Clear selection
             </button>
           )}
-          <span className={live ? "live on" : "live"} title={live ? "Live: updates as runs are logged" : "Reconnecting…"}>
-            <i /> {live ? "live" : "offline"}
-          </span>
+          {snapshot ? (
+            <span className="live snapshot" title={`Read-only export made with mltree ${snapshot.mltree_version}`}>
+              snapshot · {new Date(snapshot.exported_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+            </span>
+          ) : (
+            <span className={live ? "live on" : "live"} title={live ? "Live: updates as runs are logged" : "Reconnecting…"}>
+              <i /> {live ? "live" : "offline"}
+            </span>
+          )}
+          <ExportMenu project={pipeline?.project ?? ""} onMap={route.view === "map"} goMap={() => go("map")} />
           <button className="icon" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle dark / light">
             {theme === "dark" ? "☀" : "☾"}
           </button>
