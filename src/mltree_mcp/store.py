@@ -214,6 +214,13 @@ class Store:
         return self.dir.is_dir() and (self.db_path.exists() or self.pipeline_path.exists())
 
     # connection
+    @staticmethod
+    def _bump(c: sqlite3.Connection) -> None:
+        c.execute(
+            "INSERT INTO meta(key, value) VALUES ('revision', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+        )
+
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -254,6 +261,7 @@ class Store:
             else:
                 c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('project_name', ?)", (self.root.name,))
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('created_at', ?)", (utcnow(),))
+            self._bump(c)
         if not db_existed and self.pipeline_path.exists():
             self._import_yaml()
         self._write_yaml()
@@ -327,6 +335,7 @@ class Store:
                     "VALUES (?,?,?,?,?,?,?,?,?)",
                     (name, script, description, json.dumps(inputs), json.dumps(outputs), json.dumps(params), kind, now, now),
                 )
+            self._bump(c)
         self._write_yaml()
         step = self.get_step(name)
         step["action"] = "updated" if existing else "created"
@@ -400,6 +409,7 @@ class Store:
                 "INSERT INTO edges(source, target, label, created_at) VALUES (?,?,?,?)",
                 (source, target, label or "", utcnow()),
             )
+            self._bump(c)
         self._write_yaml()
         src, tgt = self.get_step(source), self.get_step(target)
         shared = [x for x in src["outputs"] if x in tgt["inputs"]]
@@ -555,6 +565,7 @@ class Store:
                     started_at, record["finished_at"], now,
                 ),
             )
+            self._bump(c)
         (run_dir / "run.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         record["run_dir"] = run_dir.relative_to(self.root).as_posix()
         return record
@@ -755,3 +766,143 @@ class Store:
                     "INSERT OR IGNORE INTO edges(source, target, label, created_at) VALUES (?,?,?,?)",
                     (e["from"], e["to"], e.get("label", ""), now),
                 )
+
+    # ------------------------------------------------------- viewer helpers
+
+    def revision(self) -> int:
+        """Monotonic counter bumped on every write; the viewer polls it for live refresh."""
+        if not self.db_path.exists():
+            return 0
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM meta WHERE key='revision'").fetchone()
+        return int(row["value"]) if row else 0
+
+    def set_positions(self, positions: dict[str, Any]) -> dict[str, Any]:
+        """Save node positions: {step: {"x": float, "y": float} | None}. None clears a position."""
+        self._require()
+        if not isinstance(positions, dict) or not positions:
+            raise MLTreeError("positions must be a non-empty object of {step: {x, y}}")
+        names = set(self.step_names())
+        clean: list[tuple[float | None, float | None, str]] = []
+        for name, pos in positions.items():
+            if name not in names:
+                raise MLTreeError(f"Unknown step {name!r}")
+            if pos is None:
+                clean.append((None, None, name))
+                continue
+            try:
+                x, y = float(pos["x"]), float(pos["y"])
+            except (TypeError, KeyError, ValueError) as exc:
+                raise MLTreeError(f"position for {name!r} must be {{x: number, y: number}}") from exc
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise MLTreeError(f"position for {name!r} must be finite")
+            clean.append((x, y, name))
+        with self._conn() as c:
+            c.executemany("UPDATE steps SET pos_x=?, pos_y=? WHERE name=?", clean)
+            self._bump(c)
+        return {"updated": [n for _, _, n in clean]}
+
+    def _snapshot_file(self, run_id: str) -> Path | None:
+        d = self.runs_dir / run_id
+        if not d.is_dir():
+            return None
+        files = sorted(d.glob("script.*"))
+        return files[0] if files else None
+
+    def script(self, step: str, run_id: str | None = None) -> dict[str, Any]:
+        """The step's current script, or the snapshot stored with one of its runs."""
+        info = self.get_step(step)
+        if run_id:
+            run = self.get_run(run_id)
+            if run["step"] != info["name"]:
+                raise MLTreeError(f"Run {run_id!r} belongs to step {run['step']!r}, not {info['name']!r}")
+            f = self._snapshot_file(run_id)
+            if f is None:
+                raise MLTreeError(f"Run {run_id!r} has no script snapshot (the script did not exist when it was logged)")
+            data = f.read_bytes()
+            return {
+                "step": info["name"], "source": "snapshot", "run_id": run_id,
+                "path": f.relative_to(self.root).as_posix(), "script_path": info["script_path"],
+                "content": data.decode("utf-8", errors="replace"), "sha256": hashlib.sha256(data).hexdigest(),
+                "created_at": run["created_at"],
+            }
+        if not info["script_path"]:
+            raise MLTreeError(f"Step {info['name']!r} has no script_path")
+        f = self.root / info["script_path"]
+        if not f.is_file():
+            raise MLTreeError(f"Script {info['script_path']} does not exist")
+        data = f.read_bytes()
+        return {
+            "step": info["name"], "source": "current", "run_id": None, "path": info["script_path"],
+            "script_path": info["script_path"], "content": data.decode("utf-8", errors="replace"),
+            "sha256": hashlib.sha256(data).hexdigest(), "created_at": None,
+        }
+
+    def snapshots(self, step: str) -> list[dict[str, Any]]:
+        """Runs of a step that carry a script snapshot, newest first, with whether it differs from the current file."""
+        info = self.get_step(step)
+        current_sha = None
+        if info["script_exists"]:
+            current_sha = hashlib.sha256((self.root / info["script_path"]).read_bytes()).hexdigest()
+        out = []
+        for r in self.list_runs(step=info["name"], limit=1000):
+            if r["script_sha256"] and self._snapshot_file(r["id"]) is not None:
+                out.append({
+                    "run_id": r["id"], "created_at": r["created_at"], "status": r["status"],
+                    "sha256": r["script_sha256"], "same_as_current": r["script_sha256"] == current_sha,
+                })
+        return out
+
+    def metric_names(self) -> list[str]:
+        self._require()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT DISTINCT j.key AS k FROM runs, json_each(runs.metrics) AS j "
+                "WHERE j.type IN ('integer','real') ORDER BY k"
+            ).fetchall()
+        return [r["k"] for r in rows]
+
+    def run_tree(self, metric: str | None = None, mode: str = "max", step: str | None = None) -> dict[str, Any]:
+        """All runs as a forest built from parent_run_id, plus the best run for `metric` if given."""
+        runs = self.list_runs(step=step, limit=1000)
+        ids = {r["id"] for r in runs}
+        edges = [{"source": r["parent_run_id"], "target": r["id"]} for r in runs if r["parent_run_id"] in ids]
+        best = None
+        if metric:
+            try:
+                best = self.best_run(metric, mode=mode, step=step)
+            except MLTreeError:
+                best = None
+        runs.reverse()  # oldest first reads better in a tree
+        return {
+            "runs": runs,
+            "edges": edges,
+            "roots": [r["id"] for r in runs if r["parent_run_id"] not in ids],
+            "metric": metric,
+            "mode": mode,
+            "best_run_id": best["run"]["id"] if best else None,
+            "best_value": best["value"] if best else None,
+            "metrics": self.metric_names(),
+        }
+
+    def compare(self, run_ids: list[str]) -> dict[str, Any]:
+        """Side-by-side params and metrics for two or more runs."""
+        self._require()
+        run_ids = _check_str_list(run_ids, "run_ids")
+        if len(run_ids) < 2:
+            raise MLTreeError("Pick at least 2 runs to compare")
+        runs = [self.get_run(r) for r in run_ids]
+        pkeys = sorted({k for r in runs for k in r["params"]})
+        mkeys = sorted({k for r in runs for k in r["metrics"]})
+
+        def differs(key: str, field: str) -> bool:
+            vals = [json.dumps(r[field].get(key), sort_keys=True) for r in runs]
+            return len(set(vals)) > 1
+
+        return {
+            "runs": runs,
+            "param_keys": pkeys,
+            "metric_keys": mkeys,
+            "differing_params": [k for k in pkeys if differs(k, "params")],
+            "differing_metrics": [k for k in mkeys if differs(k, "metrics")],
+        }

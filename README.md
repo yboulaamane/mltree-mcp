@@ -9,9 +9,13 @@ While the assistant writes and runs your ML / QSAR / GNN code, it calls `mltree`
 - wire the steps into a **DAG**;
 - log every execution as a **run** with params, metrics and artifacts, branching from a parent run (HPO trials, GNN variants…), so experiments form a **mind-map tree** instead of being scattered down a notebook.
 
-Everything lives as plain files in your repo under `.mltree/`. A browser map viewer (KNIME-style) is coming in Phase 2; this release is the MCP core.
+Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp view` opens a KNIME-style map of it in your browser.
 
-> Status: **0.1.0 / Phase 1** — store + MCP tools. Viewer, step runner, `fork_run`, `compare_runs` and Optuna integration are on the roadmap.
+![Workflow map](docs/screenshot-map.png)
+
+![Experiment tree](docs/screenshot-tree.png)
+
+> Status: **0.2.0**. Phase 1 (MCP core) and Phase 2 (map viewer) are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
 
 ## Install
 
@@ -85,6 +89,58 @@ startup_timeout_sec = 20   # first uvx run downloads dependencies
 
 In the Codex TUI, `/mcp` lists active servers. Codex also reads the server's built-in `instructions`, which tell it when to call each tool.
 
+## The map viewer
+
+```bash
+mltree-mcp view                                   # project = $MLTREE_PROJECT / cwd
+mltree-mcp view --project ~/projects/qsar-gnn --port 8765
+# then open http://localhost:8765
+```
+
+Or ask the assistant: it calls `open_map`, which starts the viewer in the background if needed and returns the URL.
+
+- **Workflow map.** Your steps form a DAG, coloured by each step's latest run (grey not run, blue running, green done, red failed). Nodes are laid out automatically (dagre). If you drag them, their positions are saved to the store (`pos_x` / `pos_y`), and **Auto layout** resets them.
+- **Step panel.** Click a node to see its inputs, outputs and params, and a read-only editor (Monaco, the VS Code editor) showing the script. A dropdown switches between the **current file** and the **snapshot saved with each run**, marked "same as current" or "changed". Below it is the step's runs table.
+- **Experiment tree.** All runs form a mind-map built from `parent_run_id`. Pick a metric and "lower/higher is better" to highlight the best run (★). You can filter by step.
+- **Compare.** Tick 2 or more runs anywhere to get a params/metrics table (rows that differ are marked) and a grouped Plotly bar chart.
+- **Live.** The page updates by itself as the assistant logs runs, using Server-Sent Events with polling as a fallback. Dark and light themes follow your OS and can be toggled.
+
+The built frontend ships inside the Python package (`src/mltree_mcp/static/`), so `pip install` needs no Node. Monaco is bundled too, with no CDN, so it works offline and on air-gapped clusters.
+
+![Compare runs](docs/screenshot-compare.png)
+
+### On a remote server or HPC cluster
+
+The viewer binds to `127.0.0.1` by default. Run it on the server and tunnel the port from your laptop:
+
+```bash
+# on the server (or let the assistant call open_map there)
+mltree-mcp view --project ~/projects/qsar-gnn
+
+# on your laptop
+ssh -L 8765:localhost:8765 you@server
+# open http://localhost:8765
+```
+
+Use `--host 0.0.0.0` only on a network you trust. The viewer has no authentication, and position saving is its only write.
+
+### HTTP API
+
+| Route | Returns |
+| --- | --- |
+| `GET /api/health` | project, root, `revision` (bumped on every store change) |
+| `GET /api/pipeline` | nodes (params, script, position, latest run status), edges, order |
+| `PUT /api/positions` | body `{"positions": {"step": {"x": 0, "y": 0} \| null}}` |
+| `GET /api/steps/{step}` | one node |
+| `GET /api/steps/{step}/script[?run_id=]` | current script, or the snapshot stored with a run |
+| `GET /api/steps/{step}/snapshots` | runs of the step that carry a script snapshot |
+| `GET /api/runs[?step=&status=&parent_run_id=&limit=]` | runs, newest first |
+| `GET /api/runs/{run_id}` | one run |
+| `GET /api/tree[?metric=&mode=min\|max&step=]` | run forest (runs, edges, roots) and the best run |
+| `GET /api/compare?ids=a,b[,c]` | runs, param/metric keys and which ones differ |
+| `GET /api/metrics` | numeric metric names |
+| `GET /api/events` | `text/event-stream` of `revision` events |
+
 ## Tools
 
 | Tool | What the assistant uses it for |
@@ -96,6 +152,7 @@ In the Codex TUI, `/mcp` lists active servers. Codex also reads the server's bui
 | `log_run(step, params?, metrics?, artifacts?, parent_run_id?, notes?, status?, tags?)` | Record a run. Metrics must be numbers. Artifacts ≤ 50 MB are copied into `.mltree/runs/<run_id>/artifacts/`; bigger ones are referenced. The step's script is snapshotted with its SHA-256 and the git commit. |
 | `list_runs(step?, status?, parent_run_id?, limit?)` | Runs, newest first. |
 | `best_run(metric, mode="max"\|"min", step?)` | Best **succeeded** run by a metric. |
+| `open_map(start=True, port?)` | URL of the map viewer. It starts `mltree-mcp view` in the background if the viewer isn't running, and includes the `ssh -L` tip for remote servers. |
 
 Resource: **`mltree://pipeline`** — the same JSON as `get_pipeline`.
 
@@ -139,6 +196,7 @@ This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up t
   pass that run's id as `parent_run_id` so the experiment tree branches correctly.
 - To answer "which model was best?" use `best_run` (mode "min" for losses/RMSE, "max" for AUC/R²)
   and `list_runs`; don't guess from memory.
+- When the user wants to see the workflow, call `open_map` and give them the URL.
 ```
 
 ## Demo: a tiny GNN pipeline
@@ -152,6 +210,7 @@ python steps/load_smiles.py && python steps/featurize.py && python steps/split.p
 
 # register the steps and log a few FAKE runs (tagged "demo") to see the tree
 python register_demo.py --reset
+mltree-mcp view --project .            # http://localhost:8765
 ```
 
 The values in `data/molecules.csv` and the metrics logged by `register_demo.py` are illustrative demo data, not real measurements.
@@ -163,17 +222,29 @@ uv venv && uv pip install -e ".[dev]"
 pytest -q
 ```
 
-Tests cover the store, every tool (called in-process through the MCP server), the `mltree://pipeline` resource, the demo, and a smoke test that launches the stdio server and talks to it with the MCP client SDK.
+The tests cover:
+- the store, and every tool called in-process through the MCP server
+- the `mltree://pipeline` resource and the demo
+- a smoke test that launches the stdio server and talks to it with the MCP client SDK
+- every viewer API route, the SPA fallback, the live event stream and `open_map`
+
+Frontend (React + TypeScript + Vite + React Flow + Monaco + Plotly) lives in `frontend/`:
+
+```bash
+cd frontend && npm install
+npm run dev          # http://localhost:5173, proxies /api to a running `mltree-mcp view`
+npm run build        # type-checks and writes the bundle into src/mltree_mcp/static/ (commit it)
+```
+
+Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
 
 ## Roadmap
 
-1. **MCP core** (this release)
-2. Read-only map viewer on `localhost` (React Flow): click a node to see its script and runs
-3. `run_step` with caching and live logs, `fork_run`, `compare_runs`, experiment tree view, Plotly charts
+1. **MCP core** ✅
+2. **Map viewer** ✅ (map, script panel with run snapshots, experiment tree, compare, live refresh)
+3. `run_step` with caching and live logs; `fork_run` / `compare_runs` tools; loss curves
 4. Optuna trials as branches; RDKit / PyG starter steps (GCN, GAT)
 5. PyPI release, Claude Code plugin bundle with slash commands, demo site
-
-Remote servers / HPC: run your assistant over SSH on the server (the MCP server starts with it), then tunnel the Phase 2 viewer with `ssh -L 8765:localhost:8765 you@server`.
 
 ## License
 

@@ -24,3 +24,8 @@ examples/**/data/processed/
 Thumbs.db
 .idea/
 .vscode/
+
+# frontend
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo

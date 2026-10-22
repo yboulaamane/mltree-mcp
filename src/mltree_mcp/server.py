@@ -32,7 +32,7 @@ mltree records an ML workflow as a node graph (steps + edges) and every experime
 Use it as you work: call init_project once per repo; call add_step whenever you create or change a
 pipeline script (one script per step, e.g. steps/split.py); call connect_steps to wire data flow; call
 log_run after every execution with its params and metrics (use parent_run_id when a run is a variation
-of an earlier one, e.g. an HPO trial). Call get_pipeline before changing the workflow, and best_run /
+of an earlier one, e.g. an HPO trial). Call open_map to give the user the viewer URL. Call get_pipeline before changing the workflow, and best_run /
 list_runs to answer questions about experiments. Paths are relative to the project root.
 """
 
@@ -147,6 +147,62 @@ def best_run(
     return _call(lambda: _store().best_run(metric, mode=mode, step=step))
 
 
+@mcp.tool()
+def open_map(
+    start: Annotated[bool, Field(description="Start the viewer in the background if it is not running")] = True,
+    port: Annotated[int | None, Field(description="Viewer port (default $MLTREE_VIEW_PORT or 8765)", ge=1, le=65535)] = None,
+) -> dict[str, Any]:
+    """Return the URL of the mltree map viewer (and start it if needed). Give the URL to the user."""
+    return _call(lambda: _open_map(start=start, port=port))
+
+
+def _viewer_health(url: str) -> dict[str, Any] | None:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url + "/api/health", timeout=0.5) as r:  # noqa: S310 - localhost only
+            return json.loads(r.read().decode())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _open_map(start: bool = True, port: int | None = None) -> dict[str, Any]:
+    import subprocess
+    import time
+
+    from .viewer import DEFAULT_PORT, view_url
+
+    root = resolve_project_root()
+    port = port or int(os.environ.get("MLTREE_VIEW_PORT") or DEFAULT_PORT)
+    url = view_url(port=port)
+    health = _viewer_health(url)
+    started = False
+    if health is None and start:
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "mltree_mcp", "view", "--project", str(root), "--port", str(port)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+        started = True
+        for _ in range(30):
+            time.sleep(0.2)
+            health = _viewer_health(url)
+            if health:
+                break
+    result: dict[str, Any] = {
+        "url": url,
+        "running": health is not None,
+        "started": started,
+        "project": str(root),
+        "remote_tip": f"On a remote server, tunnel it from your laptop: ssh -L {port}:localhost:{port} user@server, then open {url}",
+    }
+    if health and health.get("root") and health["root"] != str(root):
+        result["warning"] = f"A viewer for another project ({health['root']}) is already on port {port}; pass another port."
+    if health is None:
+        result["hint"] = f"Viewer not running. Start it with: mltree-mcp view --project {root} --port {port}"
+    return result
+
+
 # ---------------------------------------------------------------- resources
 
 
@@ -169,17 +225,39 @@ def pipeline_resource() -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="mltree-mcp", description="Run the mltree MCP server over stdio (for Claude Code, Codex and other MCP clients)."
+        prog="mltree-mcp",
+        description="mltree MCP server. With no command it runs over stdio (for Claude Code, Codex and other MCP "
+        "clients); `mltree-mcp view` serves the map viewer.",
     )
     parser.add_argument("--project", help="Project directory (default: $MLTREE_PROJECT, $CLAUDE_PROJECT_DIR or cwd)")
     parser.add_argument("--version", action="version", version=f"mltree-mcp {__version__}")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("serve", help="Run the MCP server over stdio (the default)")
+    v = sub.add_parser("view", help="Serve the map viewer on http://localhost:8765")
+    v.add_argument("--project", dest="view_project", help="Project directory")
+    v.add_argument("--host", default=None, help="Bind address (default 127.0.0.1; use 0.0.0.0 only on trusted networks)")
+    v.add_argument("--port", type=int, default=None, help="Port (default 8765)")
     args = parser.parse_args(argv)
-    if args.project:
+
+    project = getattr(args, "view_project", None) or args.project
+    if project:
         try:
-            os.environ["MLTREE_PROJECT"] = str(resolve_project_root(args.project))
+            os.environ["MLTREE_PROJECT"] = str(resolve_project_root(project))
         except MLTreeError as exc:
             print(f"mltree-mcp: {exc}", file=sys.stderr)
             raise SystemExit(2)
+
+    if args.command == "view":
+        from .viewer import DEFAULT_HOST, DEFAULT_PORT, serve
+
+        host = args.host or os.environ.get("MLTREE_VIEW_HOST") or DEFAULT_HOST
+        port = args.port or int(os.environ.get("MLTREE_VIEW_PORT") or DEFAULT_PORT)
+        try:
+            serve(host=host, port=port)
+        except MLTreeError as exc:
+            print(f"mltree-mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        return
     mcp.run("stdio")
 
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mltree-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "An MCP server that maps your ML / GNN workflow as a node graph and records every experiment as a branching tree, while Codex or Claude Code works."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,10 +24,14 @@ dependencies = [
   # Works with the 1.x SDK (FastMCP) and the 2.x SDK (MCPServer).
   "mcp>=1.10",
   "pyyaml>=6.0",
+  # viewer (already pulled in by the MCP SDK; listed explicitly)
+  "starlette>=0.27",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4", "httpx>=0.27"]
+screenshots = ["playwright>=1.40"]
 
 [project.scripts]
 mltree-mcp = "mltree_mcp.server:main"
@@ -37,6 +41,10 @@ Homepage = "https://github.com/yboulaamane/mltree-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mltree_mcp"]
+artifacts = ["src/mltree_mcp/static/**"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["frontend/node_modules", "docs/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
