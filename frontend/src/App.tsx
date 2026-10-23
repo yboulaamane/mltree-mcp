@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import { useApi, useRevision } from "./api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, useApi, useRevision } from "./api";
 import type { Pipeline } from "./types";
+import RunDialog from "./RunDialog";
+import LogPanel from "./LogPanel";
+import { RunContext, type RunCtx, type Watch } from "./runctx";
 import MapView from "./MapView";
 import TreeView from "./TreeView";
 import CompareView from "./CompareView";
@@ -37,6 +40,27 @@ export default function App() {
   const { revision, live } = useRevision();
   const snapshot = offlineData();
   const { data: pipeline, error } = useApi<Pipeline>("/api/pipeline", [revision]);
+  const { data: health } = useApi<{ allow_run?: boolean }>("/api/health", []);
+  const [dialog, setDialog] = useState<{ step: string; tab: "run" | "sweep" } | null>(null);
+  const [watches, setWatches] = useState<Watch[]>([]);
+  const watch = useCallback((w: Watch) => setWatches((ws) => [...ws.filter((x) => x.id !== w.id), w].slice(-8)), []);
+  const runCtx: RunCtx = useMemo(() => ({
+    mode: snapshot ? "none" : health?.allow_run ? "on" : "off",
+    openRun: (step, tab = "run") => setDialog({ step, tab }),
+    watch,
+  }), [snapshot, health, watch]);
+
+  // re-attach to runs/sweeps that were started before a page reload
+  useEffect(() => {
+    if (!health?.allow_run) return;
+    api<{ runs: { run_id: string; step: string }[]; sweeps: { sweep_id: string; step: string; current: string | null }[] }>("/api/active")
+      .then((a) => {
+        const inSweep = new Set(a.sweeps.map((s) => s.current));
+        a.sweeps.forEach((s) => watch({ kind: "sweep", id: s.sweep_id, step: s.step }));
+        a.runs.filter((r) => !inSweep.has(r.run_id)).forEach((r) => watch({ kind: "run", id: r.run_id, step: r.step }));
+      })
+      .catch(() => {});
+  }, [health, watch]);
 
   useEffect(() => {
     const on = () => {
@@ -68,6 +92,7 @@ export default function App() {
   const compare = useCallback(() => go("compare", { ids: selected.join(",") }), [go, selected]);
 
   return (
+    <RunContext.Provider value={runCtx}>
     <div className="app">
       <header className="topbar">
         <div className="brand">
@@ -123,6 +148,12 @@ export default function App() {
           <CompareView theme={theme} revision={revision} selected={selected} toggleRun={toggleRun} />
         )}
       </main>
+      <LogPanel watches={watches} revision={revision} onClose={(id) => setWatches((ws) => ws.filter((w) => w.id !== id))} />
+      {dialog && pipeline?.nodes.find((n) => n.name === dialog.step) && (
+        <RunDialog step={pipeline.nodes.find((n) => n.name === dialog.step)!} tab={dialog.tab}
+          onClose={() => setDialog(null)} onStarted={watch} />
+      )}
     </div>
+    </RunContext.Provider>
   );
 }

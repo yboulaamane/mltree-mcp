@@ -4,6 +4,7 @@ import type { Run, Script, Snapshot, StepNode } from "./types";
 import { STATUS_LABEL, fmtTime, fmtVal, shortId } from "./util";
 import RunsTable from "./RunsTable";
 import type { Theme } from "./App";
+import { RUN_OFF_HINT, runnable, useRuns } from "./runctx";
 
 const CodeView = lazy(() => import("./CodeView"));
 
@@ -24,6 +25,8 @@ export default function SidePanel(props: {
   );
   const chosen = snaps?.snapshots.find((s) => s.run_id === source);
   const nSel = props.selected.length;
+  const rc = useRuns();
+  const canRun = rc.mode !== "none" && runnable(step.script_path, step.script_exists);
 
   return (
     <aside className="panel">
@@ -32,6 +35,13 @@ export default function SidePanel(props: {
           <div className="eyebrow">Step</div>
           <h2>{step.name} <span className={`badge status-${step.status}`}>{STATUS_LABEL[step.status]}</span></h2>
           {step.description && <p className="muted">{step.description}</p>}
+          {canRun && (
+            <div className="run-actions">
+              <button className="primary" disabled={rc.mode !== "on"} title={rc.mode === "on" ? "" : RUN_OFF_HINT} onClick={() => rc.openRun(step.name, "run")}>▶ Run…</button>
+              <button disabled={rc.mode !== "on"} title={rc.mode === "on" ? "" : RUN_OFF_HINT} onClick={() => rc.openRun(step.name, "sweep")}>Grid sweep…</button>
+              {rc.mode === "off" && <span className="muted small">start the viewer with <code>--allow-run</code> to enable</span>}
+            </div>
+          )}
         </div>
         <button className="icon" onClick={props.onClose} title="Close">✕</button>
       </div>
@@ -74,7 +84,9 @@ export default function SidePanel(props: {
           <button disabled={nSel < 2} onClick={props.onCompare}>Compare {nSel ? `(${nSel})` : ""}</button>
         </div>
         <RunsTable runs={runs?.runs ?? []} selected={props.selected} toggleRun={props.toggleRun}
-          activeId={source || null} onOpen={(r) => r.script_sha256 && setSource(r.id)} />
+          activeId={source || null}
+          onLog={rc.mode === "none" ? undefined : (r) => rc.watch({ kind: r.kind === "sweep" ? "sweep" : "run", id: r.id, step: r.step })}
+          onOpen={(r) => r.script_sha256 && setSource(r.id)} />
       </section>
     </aside>
   );

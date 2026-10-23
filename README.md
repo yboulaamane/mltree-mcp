@@ -15,7 +15,9 @@ Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp v
 
 ![Experiment tree](docs/screenshot-tree.png)
 
-> Status: **0.4.0**. Phase 1 (MCP core), Phase 2 (map viewer), Phase 3 (`scan_project` for existing projects) and shareable HTML export are done. The step runner, `fork_run` / `compare_runs` tools and Optuna integration are on the roadmap.
+> Status: **0.5.0**. MCP core, map viewer, `scan_project` for existing projects, shareable HTML export, and now
+> **running steps and grid sweeps from the map** (opt-in, see [Run steps from the map](#run-steps-from-the-map)).
+> See the [changelog](#changelog).
 
 ## Install
 
@@ -187,7 +189,108 @@ ssh -L 8765:localhost:8765 you@server
 # open http://localhost:8765
 ```
 
-Use `--host 0.0.0.0` only on a network you trust. The viewer has no authentication, and position saving is its only write.
+Use `--host 0.0.0.0` only on a network you trust. The viewer has no authentication; without `--allow-run`, position
+saving is its only write. `--allow-run` refuses any bind other than `127.0.0.1`, so run steps through the SSH tunnel.
+
+## Run steps from the map
+
+Start the viewer with `--allow-run` and each node gets a **▶** button, and the step panel gets **▶ Run…** and **Grid sweep…**:
+
+```bash
+mltree-mcp view --project ~/projects/qsar-gnn --allow-run           # Python: see "Which interpreter" below
+mltree-mcp view --project ~/projects/qsar-gnn --allow-run --python ~/miniconda3/envs/gnn/bin/python
+```
+
+![Run dialog](docs/screenshot-run-dialog.png)
+
+- **Run dialog.** The params are prefilled from the step's last run, or from its scanned / declared params. You can
+  edit them, add extra CLI arguments and see the exact command before you launch. A checkbox confirms that you know it
+  executes the script on this machine (remembered for the browser tab).
+- **Live log.** stdout and stderr stream into a panel at the bottom, over Server-Sent Events, with stderr in red.
+  **Cancel** sends SIGTERM, then SIGKILL after 5 s. Closing the page doesn't stop the run, and reopening it re-attaches.
+- **Automatic record.** Every run is logged by itself: params, the script snapshot (SHA-256 and git commit), the exact
+  command, exit code, duration, the full log (`.mltree/runs/<id>/log.txt`) and metrics. A failed exit code marks
+  the run failed, and its last stderr lines go into the notes. A run branches in the experiment tree from the newest
+  succeeded run of an upstream step, so `evaluate` hangs under the `train` run that made its model.
+
+![Live log panel](docs/screenshot-run-log.png)
+
+**How params reach your script.** mltree reads the script (it doesn't run it) to choose a style:
+
+| Script uses | Params passed as |
+| --- | --- |
+| `argparse` / `click` options | `--alpha 0.5 --layers 2` (booleans as bare flags; only options the script declares) |
+| `sys.argv[1]`, `sys.argv[2]` … | positional values, in that order |
+| `@hydra.main` | `alpha=0.5 layers=2` overrides |
+| none of these | environment only |
+
+Every run also gets the following environment variables, so params the CLI doesn't declare still arrive and the dialog
+warns about them:
+
+| Variable | Value |
+| --- | --- |
+| `MLTREE_PARAMS` | all params as JSON |
+| `MLTREE_PARAM_<NAME>` | one param, with the name upper-cased |
+| `MLTREE_RUN_ID`, `MLTREE_STEP`, `MLTREE_PROJECT` | the run, the step, the project root |
+| `MLTREE_METRICS_FILE` | `.mltree/runs/<id>/metrics.json`; write a JSON dict here to record metrics |
+
+Runs use the project root as the working directory, with `python -u` (unbuffered output).
+
+**Which interpreter.** `--python`, else `$MLTREE_PYTHON`, else the project's `.venv/` or `venv/`, else the active
+`$VIRTUAL_ENV` / `$CONDA_PREFIX`, else `python3` on `PATH`.
+
+**Reporting metrics.** Print lines like these. Nested JSON is flattened to `val.rmse`.
+
+```python
+print(f"MLTREE_METRIC epoch={epoch} train_loss={loss:.4f} val_rmse={rmse:.4f}")   # key=value pairs
+print("MLTREE_METRIC " + json.dumps({"val": {"rmse": rmse, "r2": r2}}))           # or a JSON object
+```
+
+Alternatively, write a JSON dict to `$MLTREE_METRICS_FILE` (or to a `metrics*.json` file the step declares as an output).
+The last value of each metric becomes the run's metric; a file overrides printed values. Every `MLTREE_METRIC` line is
+also kept as one point of a step-wise history (`.mltree/runs/<id>/metrics_history.jsonl`, `GET /api/runs/{id}/history`),
+which will feed the loss-curve overlays. Lines without the prefix are just log, so the script still works without mltree.
+
+### Sweeps
+
+**Grid sweep…** takes comma-separated values per param (`0.05, 0.2, 0.5`), a metric to rank by, and lower or higher
+is better. It shows how many runs the grid makes (64 at most by default) and then runs them **one after another** as
+children of a **sweep** run. The log panel shows the progress, a child table with the best one starred, and each
+child's log. **Cancel** stops the current child and skips the rest.
+
+![Sweep progress](docs/screenshot-sweep-log.png)
+
+In the experiment tree a sweep is one card: its label, the number of runs, ✓/✗ counts and the best value. The children
+fan out below it with the best child highlighted (★ sweep best). Sweeps with more than 8 children start **folded to
+the best one**. **▸ unfold** shows them all.
+
+![Sweep fan in the experiment tree](docs/screenshot-sweep-tree.png)
+
+Sweeps also come from:
+- **`scan_project`**: an Optuna study becomes a sweep with its trials as children, ranked by the study's direction. A
+  scikit-learn `GridSearchCV` / `RandomizedSearchCV` `cv_results_` CSV becomes a sweep over its `param_*` columns,
+  ranked by `mean_test_score`.
+- **The assistant**: `run_sweep` runs a grid for you. For trials it runs itself (Optuna, a manual loop), it calls
+  `start_sweep`, then `log_run(..., sweep_id=...)` per trial, then `finish_sweep`.
+
+### Safety model
+
+Running code from a browser page is the one dangerous thing the viewer can do, so it takes several locks:
+
+1. **Off by default.** Without `--allow-run` every run/sweep/cancel `POST` returns 403 and the buttons are greyed out.
+   The shareable HTML export never has them.
+2. **Loopback only.** With `--allow-run` the viewer won't bind anything but `127.0.0.1`. Use an SSH tunnel for remote machines.
+3. **No cross-site requests.** Each `POST` needs an `X-MLTree: 1` header, which a plain form or a cross-origin page can't
+   send without a CORS preflight that mltree never approves. It also needs a loopback `Host` (this defeats DNS
+   rebinding) and, if an `Origin` header is present, a loopback `Origin`.
+4. **Only the project's own scripts.** A step's `.py` `script_path` must resolve inside the project. Nothing is run
+   through a shell, and params become separate argv entries.
+5. **An explicit confirm** in the dialog for each tab session.
+
+`scan_project` still never executes anything.
+
+The MCP tools `run_step` / `run_sweep` are allowed by default, because the assistant can already run commands in your
+shell. Set `MLTREE_ALLOW_RUN=0` in the server's environment to turn them off, for example on a shared machine.
 
 ### HTTP API
 
@@ -206,6 +309,16 @@ Use `--host 0.0.0.0` only on a network you trust. The viewer has no authenticati
 | `GET /api/metrics` | numeric metric names |
 | `GET /api/export[?scripts=0\|1]` | the shareable single-file HTML (as a download) |
 | `GET /api/events` | `text/event-stream` of `revision` events |
+| `GET /api/steps/{step}/plan[?params=json&extra_args=]` | command preview, param-passing style, form defaults, warnings |
+| `POST /api/steps/{step}/run` | `{"params", "extra_args", "parent_run_id"}` → `{"run_id"}` (needs `--allow-run`) |
+| `POST /api/steps/{step}/sweep` | `{"grid": {"p": [..]} \| {"p": "1, 2"}, "params", "metric", "mode", "max_runs"}` → `{"sweep_id", "total"}` |
+| `POST /api/runs/{run_id}/cancel` | cancel a run or a whole sweep |
+| `GET /api/active` | runs and sweeps in progress in this viewer |
+| `GET /api/runs/{run_id}/log[?offset=&tail=]` | log lines `{"s": "out"\|"err", "line"}` and `done` |
+| `GET /api/runs/{run_id}/log/stream[?offset=]` | `text/event-stream` of `lines` events, then `end` |
+| `GET /api/runs/{run_id}/history` | step-wise metrics from `MLTREE_METRIC` lines |
+
+The `POST` routes need the `X-MLTree: 1` header (see [Safety model](#safety-model)).
 
 ## Share the map
 
@@ -259,10 +372,14 @@ your machine with `scp you@server:/path/to/project/<project>-mltree.html .`
 | `add_step(name, script_path?, inputs?, outputs?, params?, description?)` | Register a node, or update it if the name exists. Script paths are relative to the project and may not escape it. |
 | `connect_steps(source, target, label?)` | Add an edge. Both steps must exist; self-loops and cycles are rejected; warns when outputs and inputs don't match. |
 | `get_pipeline()` | Nodes (script, params, latest run status, run count), edges and a topological order. |
-| `log_run(step, params?, metrics?, artifacts?, parent_run_id?, notes?, status?, tags?)` | Record a run. Metrics must be numbers. Artifacts ≤ 50 MB are copied into `.mltree/runs/<run_id>/artifacts/`; bigger ones are referenced. The step's script is snapshotted with its SHA-256 and the git commit. |
+| `run_step(step, params?, extra_args?, parent_run_id?, wait=True, timeout_s=900)` | **Execute** the step's script and record the run by itself: params, snapshot, command, exit code, duration, log and metrics. Returns the run and the log tail. Off with `MLTREE_ALLOW_RUN=0`. |
+| `run_sweep(step, grid, metric?, mode, params?, extra_args?, max_runs=64, wait=True)` | Run every grid combination one after another as children of a sweep run, and return the best one. |
+| `run_log(run_id, tail=200)` / `cancel_run(run_id)` | Follow or stop a run or sweep started with `run_step` / `run_sweep`. |
+| `start_sweep(step, metric?, mode, name?, search_space?, parent_run_id?)` / `finish_sweep(sweep_id, status)` | Group trials that the assistant runs itself: `start_sweep`, then `log_run(..., sweep_id=...)` per trial, then `finish_sweep` returns the best one. |
+| `log_run(step, params?, metrics?, artifacts?, parent_run_id?, notes?, status?, tags?, sweep_id?)` | Record a run. Metrics must be numbers. Artifacts ≤ 50 MB are copied into `.mltree/runs/<run_id>/artifacts/`; bigger ones are referenced. The step's script is snapshotted with its SHA-256 and the git commit. |
 | `list_runs(step?, status?, parent_run_id?, limit?)` | Runs, newest first. |
 | `best_run(metric, mode="max"\|"min", step?)` | Best **succeeded** run by a metric. |
-| `open_map(start=True, port?)` | URL of the map viewer. It starts `mltree-mcp view` in the background if the viewer isn't running, and includes the `ssh -L` tip for remote servers. |
+| `open_map(start=True, port?, allow_run=False)` | URL of the map viewer. It starts `mltree-mcp view` in the background if the viewer isn't running, and includes the `ssh -L` tip for remote servers. |
 
 Resource: **`mltree://pipeline`** — the same JSON as `get_pipeline`.
 
@@ -281,6 +398,9 @@ your-project/
     └── runs/<run_id>/
         ├── run.json            # params, metrics, parent, status, timestamps
         ├── script.py           # snapshot of the step script for this run
+        ├── log.txt             # stdout/stderr of runs started by mltree (stderr lines prefixed)
+        ├── metrics.json        # $MLTREE_METRICS_FILE, if the script wrote it
+        ├── metrics_history.jsonl  # one line per MLTREE_METRIC print
         └── artifacts/          # copied outputs (plots, small models…)
 ```
 
@@ -305,6 +425,9 @@ This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up t
   produced `artifacts` (plots, model files) and `status` ("failed" if it crashed, with the error in `notes`).
 - When a run is a variation of an earlier one (HPO trial, new architecture, different split seed),
   pass that run's id as `parent_run_id` so the experiment tree branches correctly.
+- Prefer `run_step` over running a step script yourself: it records the run (params, script, log, metrics) by
+  itself. Make scripts print `MLTREE_METRIC name=value` lines. For a grid search use `run_sweep`. For trials you
+  run yourself (Optuna), use `start_sweep`, then `log_run(..., sweep_id=...)`, then `finish_sweep`.
 - To answer "which model was best?" use `best_run` (mode "min" for losses/RMSE, "max" for AUC/R²)
   and `list_runs`; don't guess from memory.
 - When the user wants to see the workflow, call `open_map` and give them the URL. When they want to send it to
@@ -323,7 +446,11 @@ python steps/load_smiles.py && python steps/featurize.py && python steps/split.p
 # register the steps and log a few FAKE runs (tagged "demo") to see the tree
 python register_demo.py --reset
 mltree-mcp view --project .            # http://localhost:8765
+mltree-mcp view --project . --allow-run   # same, with Run / Grid sweep buttons (the demo needs only the stdlib)
 ```
+
+With `--allow-run`, run load_smiles → featurize → split → train → evaluate from the map, then try **Grid sweep…**
+on `train` with `alpha = 0.05, 0.2, 0.5, 1, 2` and rank by `train_rmse` (lower is better).
 
 The values in `data/molecules.csv` and the metrics logged by `register_demo.py` are illustrative demo data, not real measurements.
 
@@ -339,6 +466,8 @@ The tests cover:
 - the `mltree://pipeline` resource and the demo
 - a smoke test that launches the stdio server and talks to it with the MCP client SDK
 - every viewer API route, the SPA fallback, the live event stream and `open_map`
+- the runner (CLI detection, param passing, metric parsing, logs, cancel, grid sweeps, schema migration) and the
+  run safety guard (403 without `--allow-run`, without `X-MLTree`, with a foreign `Origin` or `Host`)
 
 Frontend (React + TypeScript + Vite + React Flow + Monaco + Plotly) lives in `frontend/`:
 
@@ -348,16 +477,32 @@ npm run dev          # http://localhost:5173, proxies /api to a running `mltree-
 npm run build        # type-checks and writes the bundle into src/mltree_mcp/static/ (commit it)
 ```
 
-Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
+Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts). If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
 
 ## Roadmap
 
 1. **MCP core** ✅
 2. **Map viewer** ✅ (map, script panel with run snapshots, experiment tree, compare, live refresh)
 3. **`scan_project`** ✅ (static import of existing projects and their MLflow / Optuna / Lightning / wandb results)
-4. `run_step` with caching and live logs; `fork_run` / `compare_runs` tools; loss curves
-5. Optuna-callback trials as live branches; RDKit / PyG starter steps (GCN, GAT)
-6. PyPI release, Claude Code plugin bundle with slash commands, demo site
+4. **Run steps and sweeps** ✅ (0.5.0: Run button, live logs, auto-recorded runs, grid sweeps, sweep fans, `run_step`)
+5. Data versioning (input/output hashes per run) and compare: param diff, code diff of snapshots, metric curves (0.6.0)
+6. Notes and tags in the viewer; GNN views: dataset stats, static architecture summary (0.7.0)
+7. PyPI release, CI, multi-project viewer (0.8.0)
+
+## Changelog
+
+**0.5.0**
+- Run steps from the map (`view --allow-run`): Run dialog with prefilled params and a command preview, live
+  stdout/stderr panel (SSE), Cancel, and automatic run records (params, snapshot, command, exit code, duration, log,
+  metrics from `MLTREE_METRIC` lines or `$MLTREE_METRICS_FILE`, step-wise history).
+- Grid sweeps: sweep runs that group their children, a sweep launcher in the viewer, collapsible sweep fans with
+  the best child highlighted in the tree, and sweep cards in the HTML export.
+- MCP tools `run_step`, `run_sweep`, `run_log`, `cancel_run`, `start_sweep`, `finish_sweep`, and `log_run(sweep_id=)`.
+- `scan_project` imports Optuna studies and `GridSearchCV` `cv_results_` CSVs as sweeps.
+- Store schema v2 (run `kind`, `sweep_id`, `sweep`, `command`, `exit_code`); v1 databases migrate on open.
+- Export: commands are made portable (interpreter basename, project-relative paths).
+
+**0.4.0** shareable single-file HTML export · **0.3.0** `scan_project` · **0.2.0** map viewer · **0.1.0** MCP core
 
 ## License
 

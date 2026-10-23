@@ -3,7 +3,7 @@ import { STATUS_LABEL, fmtTime, fmtVal, shortId } from "./util";
 
 export default function RunsTable(props: {
   runs: Run[]; selected: string[]; toggleRun: (id: string) => void;
-  onOpen?: (r: Run) => void; activeId?: string | null; showStep?: boolean;
+  onOpen?: (r: Run) => void; onLog?: (r: Run) => void; activeId?: string | null; showStep?: boolean;
 }) {
   const { runs, selected } = props;
   if (!runs.length) return <p className="muted">No runs logged yet.</p>;
@@ -20,6 +20,7 @@ export default function RunsTable(props: {
             <th>Params</th>
             {metricKeys.map((k) => <th key={k} className="num">{k}</th>)}
             <th>When</th>
+            {props.onLog && <th />}
           </tr>
         </thead>
         <tbody>
@@ -28,7 +29,7 @@ export default function RunsTable(props: {
               <td onClick={(e) => e.stopPropagation()}>
                 <input type="checkbox" checked={selected.includes(r.id)} onChange={() => props.toggleRun(r.id)} title="Select for compare" />
               </td>
-              <td className="mono nowrap" title={r.id}>{shortId(r.id)}{r.parent_run_id && <span className="muted" title={`child of ${r.parent_run_id}`}> ↳</span>}</td>
+              <td className="mono nowrap" title={r.id}>{r.kind === "sweep" && <span className="chip sweep-chip">sweep</span>}{shortId(r.id)}{r.parent_run_id && <span className="muted" title={`child of ${r.parent_run_id}`}> ↳</span>}</td>
               {props.showStep && <td>{r.step}</td>}
               <td><span className={`badge status-${r.status}`}>{STATUS_LABEL[r.status]}</span></td>
               <td className="params" title={JSON.stringify(r.params)}>
@@ -36,6 +37,7 @@ export default function RunsTable(props: {
               </td>
               {metricKeys.map((k) => <td key={k} className="num mono">{fmtVal(r.metrics[k])}</td>)}
               <td className="muted nowrap">{fmtTime(r.created_at)}</td>
+              {props.onLog && <td onClick={(e) => e.stopPropagation()}>{r.tags.includes("mltree-run") && <button className="link small" onClick={() => props.onLog!(r)}>{r.kind === "sweep" ? "sweep" : "log"}</button>}</td>}
             </tr>
           ))}
         </tbody>

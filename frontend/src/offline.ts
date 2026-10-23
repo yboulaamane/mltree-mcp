@@ -67,6 +67,17 @@ function best(d: ExportSnapshot, runs: Run[], metric: string, mode: string): Run
   return out;
 }
 
+function sweepSummary(d: ExportSnapshot, sw: Run, metric: string | null, mode: string) {
+  const m = sw.sweep?.metric || metric;
+  const md = sw.sweep?.metric ? sw.sweep?.mode ?? "max" : mode;
+  const kids = d.runs.filter((r) => r.id !== sw.id && (r.sweep_id === sw.id || r.parent_run_id === sw.id));
+  const counts: Record<string, number> = {};
+  kids.forEach((k) => (counts[k.status] = (counts[k.status] ?? 0) + 1));
+  const b = m ? best(d, kids, m, md) : null;
+  return { sweep_id: sw.id, n: kids.length, counts, metric: m, mode: md, best_run_id: b?.id ?? null,
+    best_value: b && m ? b.metrics[m] : null, best_params: b?.params ?? null };
+}
+
 const stable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
   x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x) ?? "null";
 
@@ -79,7 +90,7 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
 
   switch (parts[0]) {
     case "health":
-      return { ok: true, project: d.pipeline.project, root: d.pipeline.root, initialized: true, revision: 0, offline: true };
+      return { ok: true, project: d.pipeline.project, root: d.pipeline.root, initialized: true, revision: 0, offline: true, allow_run: false };
     case "pipeline":
       return d.pipeline;
     case "metrics":
@@ -122,6 +133,7 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
         edges: rs.filter((r) => r.parent_run_id && ids.has(r.parent_run_id)).map((r) => ({ source: r.parent_run_id, target: r.id })),
         roots: oldest.filter((r) => !r.parent_run_id || !ids.has(r.parent_run_id)).map((r) => r.id),
         metric, mode, best_run_id: b?.id ?? null, best_value: b && metric ? b.metrics[metric] : null, metrics: d.metrics,
+        sweeps: Object.fromEntries(rs.filter((r) => r.kind === "sweep").map((r) => [r.id, sweepSummary(d, r, metric, mode)])),
       };
     }
     case "compare": {

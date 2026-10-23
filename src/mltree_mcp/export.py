@@ -34,7 +34,20 @@ def default_filename(store: Store) -> str:
 def _all_runs(store: Store) -> list[dict[str, Any]]:
     with store._conn() as c:  # noqa: SLF001 - same module family; list_runs caps at 1000
         rows = c.execute("SELECT * FROM runs ORDER BY created_at DESC, rowid DESC").fetchall()
-    return [store._run_row_to_dict(r) for r in rows]  # noqa: SLF001
+    return [_portable(store, store._run_row_to_dict(r)) for r in rows]  # noqa: SLF001
+
+
+def _portable(store: Store, run: dict[str, Any]) -> dict[str, Any]:
+    """Don't leak local absolute paths (interpreter, project dir) into a shared file."""
+    cmd = run.get("command")
+    if isinstance(cmd, list) and cmd:
+        root = str(store.root)
+        out = [Path(str(cmd[0])).name]
+        for a in cmd[1:]:
+            a = str(a)
+            out.append(a.replace(root + "/", "").replace(root, ".") if root in a else a)
+        run = {**run, "command": out}
+    return run
 
 
 def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]:

@@ -4,7 +4,7 @@ import {
   type Edge as FlowEdge, type Node, type NodeProps,
 } from "@xyflow/react";
 import { useApi } from "./api";
-import type { Run, Tree } from "./types";
+import type { Run, SweepSummary, Tree } from "./types";
 import { dagreLayout } from "./layout";
 import { STATUS_LABEL, fmtNum, fmtTime, fmtVal, shortId } from "./util";
 import type { Theme } from "./App";
@@ -12,19 +12,57 @@ import type { Theme } from "./App";
 const W = 190;
 const H = 78;
 
-type RunData = { run: Run; metric: string | null; best: boolean; picked: boolean };
-type RunFlowNode = Node<RunData, "run">;
+const SW = 236;
+const SH = 96;
+const AUTO_COLLAPSE = 8; // sweeps with more children start folded to their best child
 
-function RunCard({ data }: NodeProps<RunFlowNode>) {
-  const { run, metric, best, picked } = data;
-  const v = metric ? run.metrics[metric] : undefined;
+type RunData = { run: Run; metric: string | null; best: boolean; picked: boolean; sweepBest: boolean;
+  sweep?: SweepSummary; collapsed?: boolean; hidden?: number; toggle?: () => void };
+type RunFlowNode = Node<RunData, "run" | "sweep">;
+
+const SOURCE_LABEL: Record<string, string> = { grid: "grid sweep", optuna: "Optuna study", grid_search: "grid search CV" };
+
+function SweepCard({ data }: NodeProps<RunFlowNode>) {
+  const { run, sweep, collapsed, hidden, toggle, picked } = data;
+  const c = sweep?.counts ?? {};
+  const label = SOURCE_LABEL[run.sweep?.source ?? ""] ?? "sweep";
   return (
-    <div className={`run-node status-${run.status}${best ? " best" : ""}${picked ? " picked" : ""}`}>
+    <div className={`run-node sweep-node status-${run.status}${picked ? " picked" : ""}`}>
       <Handle type="target" position={Position.Top} />
       <div className="run-head">
         <span className="dot" />
         <span className="run-step">{run.step}</span>
-        {best && <span className="star" title="Best run">★ best</span>}
+        <span className="chip sweep-chip">{label}</span>
+      </div>
+      <div className="run-id muted">{run.sweep?.name || shortId(run.id)} · {sweep?.n ?? 0} runs
+        {c.succeeded ? <span className="cnt ok"> ✓{c.succeeded}</span> : null}
+        {c.failed ? <span className="cnt bad"> ✗{c.failed}</span> : null}
+        {c.running ? <span className="cnt run"> ●{c.running}</span> : null}
+      </div>
+      <div className="run-metric">
+        {sweep?.metric && sweep.best_value != null ? <>best {sweep.metric} <b>{fmtNum(sweep.best_value)}</b></> : <span className="muted">{STATUS_LABEL[run.status]}</span>}
+      </div>
+      {(sweep?.n ?? 0) > 1 && (
+        <button className="fan-toggle nodrag" onClick={(e) => { e.stopPropagation(); toggle?.(); }}>
+          {collapsed ? `▸ show all ${sweep?.n} (${hidden} hidden)` : "▾ fold to best"}
+        </button>
+      )}
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  );
+}
+
+function RunCard({ data }: NodeProps<RunFlowNode>) {
+  const { run, metric, best, picked, sweepBest } = data;
+  const v = metric ? run.metrics[metric] : undefined;
+  return (
+    <div className={`run-node status-${run.status}${best ? " best" : ""}${sweepBest && !best ? " sweep-best" : ""}${picked ? " picked" : ""}`}>
+      <Handle type="target" position={Position.Top} />
+      <div className="run-head">
+        <span className="dot" />
+        <span className="run-step">{run.step}</span>
+        {best ? <span className="star" title="Best run">★ best</span>
+          : sweepBest ? <span className="star soft" title="Best run of its sweep">☆ sweep best</span> : null}
       </div>
       <div className="run-id mono">{shortId(run.id)}</div>
       <div className="run-metric">
@@ -36,7 +74,7 @@ function RunCard({ data }: NodeProps<RunFlowNode>) {
   );
 }
 
-const nodeTypes = { run: RunCard };
+const nodeTypes = { run: RunCard, sweep: SweepCard };
 
 function Inner(props: {
   theme: Theme; revision: number; selected: string[]; toggleRun: (id: string) => void; onCompare: () => void;
@@ -48,6 +86,7 @@ function Inner(props: {
   const q = new URLSearchParams({ ...(metric && { metric }), mode, ...(step && { step }) }).toString();
   const { data: tree, error } = useApi<Tree>(`/api/tree?${q}`, [props.revision]);
   const [focus, setFocus] = useState<string | null>(null);
+  const [fold, setFold] = useState<Record<string, boolean>>({}); // sweep id -> collapsed (unset = auto)
   const flow = useReactFlow();
   const set = (p: Partial<{ metric: string; mode: string; step: string }>) => {
     const next = { metric, mode, step, ...p };
@@ -65,22 +104,50 @@ function Inner(props: {
 
   const { nodes, edges } = useMemo(() => {
     if (!tree) return { nodes: [] as RunFlowNode[], edges: [] as FlowEdge[] };
-    const pos = dagreLayout(tree.runs.map((r) => ({ id: r.id, width: W, height: H })), tree.edges, "TB");
-    const nodes: RunFlowNode[] = tree.runs.map((r) => ({
-      id: r.id, type: "run", position: pos[r.id], width: W, height: H, draggable: false,
-      data: { run: r, metric: tree.metric, best: r.id === tree.best_run_id, picked: props.selected.includes(r.id) },
-    }));
-    const edges: FlowEdge[] = tree.edges.map((e) => ({
+    const sweeps = tree.sweeps ?? {};
+    const kids = new Map<string, string[]>();
+    tree.edges.forEach((e) => kids.set(e.source, [...(kids.get(e.source) ?? []), e.target]));
+    const sweepBest = new Set(Object.values(sweeps).map((s) => s.best_run_id).filter(Boolean) as string[]);
+    // fold collapsed sweeps down to their best child (and that child's own subtree)
+    const hide = new Set<string>();
+    const hiddenCount: Record<string, number> = {};
+    const isCollapsed = (id: string) => fold[id] ?? (sweeps[id]?.n ?? 0) > AUTO_COLLAPSE;
+    const drop = (id: string): number => {
+      if (hide.has(id)) return 0;
+      hide.add(id);
+      return 1 + (kids.get(id) ?? []).reduce((n: number, k) => n + drop(k), 0);
+    };
+    for (const sid of Object.keys(sweeps)) {
+      if (!isCollapsed(sid)) continue;
+      const keep = sweeps[sid].best_run_id;
+      hiddenCount[sid] = (kids.get(sid) ?? []).filter((k) => k !== keep).reduce((n, k) => n + drop(k), 0);
+    }
+    const runs = tree.runs.filter((r) => !hide.has(r.id));
+    const vedges = tree.edges.filter((e) => !hide.has(e.source) && !hide.has(e.target));
+    const isSweep = (r: Run) => r.kind === "sweep" || !!sweeps[r.id];
+    const pos = dagreLayout(runs.map((r) => (isSweep(r) ? { id: r.id, width: SW, height: SH } : { id: r.id, width: W, height: H })), vedges, "TB");
+    const nodes: RunFlowNode[] = runs.map((r) => {
+      const sw = isSweep(r);
+      return {
+        id: r.id, type: sw ? "sweep" : "run", position: pos[r.id], width: sw ? SW : W, height: sw ? SH : H, draggable: false,
+        data: {
+          run: r, metric: tree.metric, best: r.id === tree.best_run_id, picked: props.selected.includes(r.id),
+          sweepBest: sweepBest.has(r.id), sweep: sweeps[r.id], collapsed: sw && isCollapsed(r.id), hidden: hiddenCount[r.id] ?? 0,
+          toggle: () => setFold((f) => ({ ...f, [r.id]: !isCollapsed(r.id) })),
+        },
+      };
+    });
+    const edges: FlowEdge[] = vedges.map((e) => ({
       id: `${e.source}->${e.target}`, source: e.source, target: e.target, markerEnd: { type: MarkerType.ArrowClosed },
-      className: e.target === tree.best_run_id ? "flow-edge best" : "flow-edge",
+      className: e.target === tree.best_run_id ? "flow-edge best" : sweeps[e.source] ? (sweepBest.has(e.target) ? "flow-edge sweep best-soft" : "flow-edge sweep") : "flow-edge",
     }));
     return { nodes, edges };
-  }, [tree, props.selected]);
+  }, [tree, props.selected, fold]);
 
   useEffect(() => {
     const t = window.setTimeout(() => flow.fitView({ padding: 0.15 }), 50);
     return () => window.clearTimeout(t);
-  }, [tree?.runs.length, step, flow]);
+  }, [tree?.runs.length, nodes.length, step, flow]);
 
   const run = tree?.runs.find((r) => r.id === focus) ?? null;
   const best = tree?.runs.find((r) => r.id === tree.best_run_id) ?? null;
@@ -139,6 +206,11 @@ function Inner(props: {
           <label className="check">
             <input type="checkbox" checked={props.selected.includes(run.id)} onChange={() => props.toggleRun(run.id)} /> Select for compare
           </label>
+          {tree?.sweeps?.[run.id] && <SweepInfo run={run} s={tree.sweeps[run.id]} onPick={setFocus} />}
+          {run.sweep_id && run.sweep_id !== run.parent_run_id && <p className="muted small">Part of sweep <span className="mono">{shortId(run.sweep_id)}</span></p>}
+          {(run.duration_s != null || run.exit_code != null) && (
+            <p className="muted small">{run.duration_s != null && <>took {fmtNum(run.duration_s)}s</>}{run.exit_code != null && <> · exit code {run.exit_code}</>}</p>
+          )}
           <h3>Metrics</h3>
           <dl className="dl">{Object.entries(run.metrics).map(([k, v]) => <div key={k}><dt>{k}</dt><dd className="mono">{fmtNum(v)}</dd></div>)}
             {!Object.keys(run.metrics).length && <p className="muted">–</p>}</dl>
@@ -154,6 +226,26 @@ function Inner(props: {
         </aside>
       )}
     </div>
+  );
+}
+
+function SweepInfo({ run, s, onPick }: { run: Run; s: SweepSummary; onPick: (id: string) => void }) {
+  const grid = run.sweep?.grid ?? {};
+  return (
+    <>
+      <h3>Sweep</h3>
+      <dl className="dl">
+        <div><dt>source</dt><dd>{SOURCE_LABEL[run.sweep?.source ?? ""] ?? run.sweep?.source ?? "–"}</dd></div>
+        <div><dt>runs</dt><dd>{s.n} ({Object.entries(s.counts).map(([k, v]) => `${v} ${STATUS_LABEL[k as Run["status"]] ?? k}`).join(", ")})</dd></div>
+        {s.metric && <div><dt>ranked by</dt><dd className="mono">{s.metric} ({s.mode === "min" ? "lower" : "higher"} is better)</dd></div>}
+        {Object.entries(grid).map(([k, v]) => <div key={k}><dt>{k}</dt><dd className="mono">{(v as unknown[]).map(fmtVal).join(", ")}</dd></div>)}
+      </dl>
+      {s.best_run_id && (
+        <p>★ Best: <a href="#" className="mono" onClick={(e) => { e.preventDefault(); onPick(s.best_run_id!); }}>{shortId(s.best_run_id)}</a>
+          {s.best_value != null && <> · {s.metric} <b>{fmtNum(s.best_value)}</b></>}
+          {s.best_params && <span className="muted"> · {Object.entries(s.best_params).map(([k, v]) => `${k}=${fmtVal(v)}`).join(" ")}</span>}</p>
+      )}
+    </>
   );
 }
 

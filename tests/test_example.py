@@ -28,6 +28,8 @@ def test_register_demo(tmp_path):
     assert p["order"] == ["load_smiles", "featurize", "split", "train", "evaluate"]
     assert all(n["script_exists"] for n in p["nodes"])
     runs = store.list_runs(limit=1000)
-    assert len(runs) == 10 and all("demo" in r["tags"] for r in runs)
+    assert len(runs) == 11 and all("demo" in r["tags"] for r in runs)
+    sweep = [r for r in runs if r["kind"] == "sweep"]
+    assert len(sweep) == 1 and store.sweep_summary(sweep[0]["id"])["n"] == 3
     best = store.best_run("val_rmse", mode="min", step="train")
     assert best["value"] == 0.69 and best["run"]["params"]["layers"] == 2

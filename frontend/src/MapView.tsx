@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background, Controls, Handle, MarkerType, MiniMap, Position, ReactFlow, ReactFlowProvider,
   useNodesState, useReactFlow, type Edge as FlowEdge, type Node, type NodeProps,
@@ -8,6 +8,7 @@ import type { Pipeline, StepNode } from "./types";
 import { dagreLayout } from "./layout";
 import { STATUS_LABEL, firstMetric, fmtNum } from "./util";
 import SidePanel from "./SidePanel";
+import { RUN_OFF_HINT, runnable, useRuns } from "./runctx";
 import type { Theme } from "./App";
 
 const W = 220;
@@ -19,6 +20,8 @@ type StepFlowNode = Node<StepData, "step">;
 function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
   const s = data.step;
   const m = firstMetric(s.latest_run?.metrics);
+  const runs = useRuns();
+  const canRun = runs.mode !== "none" && runnable(s.script_path, s.script_exists);
   return (
     <div className={`step-node status-${s.status}${selected ? " selected" : ""}`}>
       <Handle type="target" position={Position.Left} />
@@ -26,6 +29,11 @@ function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
         <span className="dot" />
         <span className="step-name">{s.name}</span>
         <span className="pill">{STATUS_LABEL[s.status]}</span>
+        {canRun && (
+          <button className="run-btn nodrag" disabled={runs.mode !== "on" || s.status === "running"}
+            title={runs.mode === "on" ? `Run ${s.script_path}…` : RUN_OFF_HINT}
+            onClick={(e) => { e.stopPropagation(); runs.openRun(s.name); }}>▶</button>
+        )}
       </div>
       <div className="step-desc">{s.description || s.script_path || "no script"}</div>
       <div className="step-foot">
@@ -71,6 +79,24 @@ function Inner(props: {
     return () => window.clearTimeout(t);
   }, [pipeline.nodes.length, flow]);
 
+  // Re-fit when the canvas changes size (log panel opened/closed, window resized) so no node hides off-screen.
+  const canvasRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let last = { w: el.clientWidth, h: el.clientHeight };
+    let t = 0;
+    const ro = new ResizeObserver(() => {
+      const now = { w: el.clientWidth, h: el.clientHeight };
+      if (Math.abs(now.w - last.w) < 40 && Math.abs(now.h - last.h) < 40) return;
+      last = now;
+      window.clearTimeout(t);
+      t = window.setTimeout(() => flow.fitView({ padding: 0.2, duration: 200 }), 80);
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); window.clearTimeout(t); };
+  }, [flow]);
+
   const edges: FlowEdge[] = useMemo(
     () =>
       pipeline.edges.map((e) => {
@@ -104,7 +130,7 @@ function Inner(props: {
 
   return (
     <div className="split">
-      <div className="canvas">
+      <div className="canvas" ref={canvasRef}>
         {pipeline.nodes.length === 0 ? (
           <div className="empty">
             <h2>No steps yet</h2>

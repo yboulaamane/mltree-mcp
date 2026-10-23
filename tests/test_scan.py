@@ -145,6 +145,11 @@ def test_write_imports_results(messy):
     assert sorted(r["params"]["hidden"] for r in trials) == [128, 256, 512]  # categorical decoded
     best = store.best_run("value", mode="min", step="hpo_optuna")
     assert best["value"] == 0.04 and best["run"]["params"]["hidden"] == 128
+    # 0.5.0: the study is a sweep, so the tree folds it into a fan with its best trial
+    assert study["kind"] == "sweep" and study["sweep"]["source"] == "optuna" and study["sweep"]["mode"] == "min"
+    assert all(t["sweep_id"] == study["id"] for t in trials)
+    summ = store.run_tree(step="hpo_optuna")["sweeps"][study["id"]]
+    assert summ["best_value"] == 0.04 and summ["n"] == 3
 
 
 def test_rescan_is_idempotent_and_keeps_user_edits(messy):
@@ -246,3 +251,30 @@ def test_gnn_demo_helper_io(tmp_path):
             ("train", "evaluate")} <= _edges(s)
     assert _steps(s)["split"]["params"] == {"test_size": 0.2, "seed": 42}  # sys.argv fallbacks
     assert [u["path"] for u in s["utilities"]] == ["steps/_common.py"]
+
+
+def test_grid_search_cv_results_become_a_sweep(tmp_path):
+    root = tmp_path / "gs"
+    (root / "results").mkdir(parents=True)
+    (root / "train.py").write_text(
+        "import pandas as pd\nfrom sklearn.model_selection import GridSearchCV\n"
+        "gs = GridSearchCV(model, {'C': [0.1, 1, 10]}).fit(X, y)\n"
+        "pd.DataFrame(gs.cv_results_).to_csv('results/cv_results.csv')\n")
+    (root / "results" / "cv_results.csv").write_text(
+        ",mean_fit_time,param_C,param_kernel,params,mean_test_score,std_test_score,rank_test_score\n"
+        "0,0.01,0.1,rbf,\"{'C': 0.1}\",0.71,0.02,3\n"
+        "1,0.01,1,rbf,\"{'C': 1}\",0.83,0.01,1\n"
+        "2,0.02,10,rbf,\"{'C': 10}\",0.80,0.03,2\n")
+    store = Store(root)
+    s = scan_project(store)
+    sweeps = [r for r in store.list_runs(limit=100) if r["kind"] == "sweep"]
+    assert len(sweeps) == 1, s["imported"]
+    sw = sweeps[0]
+    assert sw["sweep"]["source"] == "grid_search" and sw["sweep"]["metric"] == "mean_test_score"
+    kids = store.sweep_children(sw["id"])
+    assert len(kids) == 3 and {k["params"]["C"] for k in kids} == {0.1, 1, 10}
+    summ = store.sweep_summary(sw["id"])
+    assert summ["best_value"] == 0.83 and summ["best_params"]["C"] == 1
+    again = scan_project(store)  # idempotent
+    assert again["runs_imported"] == 0
+    assert len(store.list_runs(limit=100)) == 4

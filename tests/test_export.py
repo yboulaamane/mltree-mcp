@@ -174,3 +174,15 @@ def test_renders_offline_in_headless_chrome(demo, tmp_path):
         browser.close()
     assert problems == []
     assert network == []
+
+
+def test_runs_are_portable_and_keep_sweeps(demo):
+    rid = demo.log_run("train", {"alpha": 0.5}, {"val_rmse": 0.8}, tags=["mltree-run"],
+                       command=["/opt/venv/bin/python", str(demo.root / "steps" / "train.py"), "--alpha", "0.5"])["id"]
+    snap = build_snapshot(demo)
+    run = next(r for r in snap["runs"] if r["id"] == rid)
+    assert run["command"] == ["python", "steps/train.py", "--alpha", "0.5"]
+    assert str(demo.root) not in json.dumps(snap["runs"])
+    sweeps = [r for r in snap["runs"] if r["kind"] == "sweep"]
+    assert len(sweeps) == 1 and sweeps[0]["sweep"]["metric"] == "val_rmse"
+    assert sum(r["sweep_id"] == sweeps[0]["id"] for r in snap["runs"]) == 3

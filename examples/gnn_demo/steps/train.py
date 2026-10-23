@@ -34,3 +34,4 @@ w = solve(XtX, Xty)
 save("model.json", {"weights": w, "alpha": alpha})
 rmse = (sum((sum(a * b for a, b in zip(r, w)) - t) ** 2 for r, t in zip(X, y)) / len(y)) ** 0.5
 print(f"train_rmse={rmse:.3f} alpha={alpha}")
+print(f"MLTREE_METRIC train_rmse={rmse:.4f}")  # picked up by mltree when the step is run from the map

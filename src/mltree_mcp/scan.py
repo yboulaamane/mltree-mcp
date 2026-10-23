@@ -715,6 +715,8 @@ class FoundRun:
     finished_at: str | None = None
     parent_key: str | None = None
     tags: list[str] = field(default_factory=list)
+    kind: str = "run"  # "sweep" for a study / grid search that groups child trials
+    sweep: dict[str, Any] | None = None
 
 
 def _num(v: Any) -> float | None:
@@ -790,7 +792,7 @@ def _coerce(v: Any) -> Any:
     return v
 
 
-METRIC_FILE_RE = re.compile(r"(metric|score|result|eval|perf|summary|report)s?[^/]*\.(json|csv)$", re.I)
+METRIC_FILE_RE = re.compile(r"(metric|score|result|eval|perf|summary|report|cv_results|grid|search)s?[^/]*\.(json|csv)$", re.I)
 
 
 def find_results(root: Path, base: Path, max_depth: int = 6) -> tuple[list[FoundRun], list[dict[str, str]]]:
@@ -862,6 +864,8 @@ def _metrics_csv(root: Path, fp: Path) -> list[FoundRun]:
     rel = fp.relative_to(root).as_posix()
     mt = str(fp.stat().st_mtime_ns)
     cols = list(rows[0].keys())
+    if "mean_test_score" in cols and any(c.startswith("param_") for c in cols):
+        return _grid_csv(rel, mt, rows, cols)
     if len(cols) == 2 and all(_num(r[cols[1]]) is not None and _num(r[cols[0]]) is None for r in rows):
         metrics = {str(r[cols[0]]): _num(r[cols[1]]) for r in rows}  # metric,value table
         return [FoundRun(key=_key("metrics_csv", rel, mt), source="metrics_csv", origin=rel, step_hint=None, kind_hint="eval",
@@ -874,6 +878,30 @@ def _metrics_csv(root: Path, fp: Path) -> list[FoundRun]:
             out.append(FoundRun(key=_key("metrics_csv", rel, str(i), mt), source="metrics_csv", origin=f"{rel}#row{i + 1}",
                                 step_hint=None, kind_hint="eval", params=params, metrics=metrics,  # type: ignore[arg-type]
                                 notes=f"Imported from {rel} (row {i + 1})"))
+    return out
+
+
+def _grid_csv(rel: str, mt: str, rows: list[dict[str, Any]], cols: list[str]) -> list[FoundRun]:
+    """A scikit-learn cv_results_ table (GridSearchCV / RandomizedSearchCV saved with pandas) -> sweep + trials."""
+    pcols = [c for c in cols if c.startswith("param_")]
+    mcols = [c for c in cols if c.startswith(("mean_test_", "std_test_", "rank_test_", "mean_fit_time", "mean_train_"))]
+    pkey = _key("grid-search", rel, mt)
+    grid: dict[str, list[Any]] = {}
+    out = [FoundRun(key=pkey, source="grid_search", origin=rel, step_hint=None, kind_hint="hpo", kind="sweep",
+                    params={"n_candidates": len(rows)}, tags=["grid"],
+                    sweep={"source": "grid_search", "metric": "mean_test_score", "mode": "max", "file": rel},
+                    notes=f"Grid / randomized search results from {rel}; each candidate is a child run")]
+    for i, r in enumerate(rows[:MAX_IMPORTED_RUNS]):
+        params = {c[len("param_"):]: _coerce(r[c]) for c in pcols if r.get(c) not in (None, "")}
+        for k, v in params.items():
+            if _jsonable(v) and v not in grid.setdefault(k, []):
+                grid[k].append(v)
+        metrics = {c: _num(r[c]) for c in mcols if _num(r.get(c)) is not None}
+        out.append(FoundRun(key=_key("grid-search", rel, str(i), mt), source="grid_search", origin=f"{rel}#row{i + 1}",
+                            step_hint=None, kind_hint="hpo", params=params, metrics=metrics,  # type: ignore[arg-type]
+                            parent_key=pkey, notes=f"Candidate {i + 1} of the search in {rel}"))
+    out[0].params["grid"] = grid
+    out[0].sweep["grid"] = grid  # type: ignore[index]
     return out
 
 
@@ -1000,7 +1028,10 @@ def _optuna(root: Path, fp: Path) -> list[FoundRun] | None:
             pkey = _key("optuna-study", rel, str(sname))
             out.append(FoundRun(key=pkey, source="optuna", origin=f"{rel}#{sname}", step_hint=None, kind_hint="hpo",
                                 params={"study": sname, "direction": dirs, "n_trials": len(trials)},
-                                notes=f"Optuna study {sname!r} from {rel}; trials are child runs", tags=["study"]))
+                                notes=f"Optuna study {sname!r} from {rel}; trials are child runs", tags=["study"],
+                                kind="sweep", sweep={"source": "optuna", "study": sname, "file": rel,
+                                                     "metric": "value" if "," not in dirs else "value_0",
+                                                     "mode": "max" if dirs.split(",")[0] == "maximize" else "min"}))
             for tid, num, state, ds, dc in trials[:MAX_IMPORTED_RUNS]:
                 params = {p: _decode_optuna_param(v, dj) for p, v, dj in
                           con.execute("SELECT param_name, param_value, distribution_json FROM trial_params WHERE trial_id=?", (tid,))}
@@ -1312,7 +1343,7 @@ def scan_project(  # noqa: C901 - one linear pipeline, easier to read in one pla
         return None
 
     imported: list[dict[str, Any]] = []
-    key_to_run: dict[str, str] = {}
+    key_to_run: dict[str, str] = store.imported_run_ids() if (store.is_initialized() and not dry_run) else {}
     n_imp = 0
     for fr in found:
         step = attach(fr)
@@ -1330,7 +1361,7 @@ def scan_project(  # noqa: C901 - one linear pipeline, easier to read in one pla
             run = store.log_run(step, params={k: v for k, v in fr.params.items() if _jsonable(v)}, metrics=fr.metrics,
                                 parent_run_id=key_to_run.get(fr.parent_key) if fr.parent_key else None, notes=fr.notes,
                                 status=fr.status, tags=_dedupe(["imported", fr.source, *fr.tags]),
-                                started_at=fr.started_at, finished_at=fr.finished_at)
+                                started_at=fr.started_at, finished_at=fr.finished_at, kind=fr.kind, sweep=fr.sweep)
             store.mark_imported(fr.key, run["id"], fr.origin)
             key_to_run[fr.key] = run["id"]
             entry["action"], entry["run_id"] = "imported", run["id"]

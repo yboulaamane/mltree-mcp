@@ -36,11 +36,21 @@ STORE_DIRNAME = ".mltree"
 DB_FILENAME = "mltree.db"
 PIPELINE_FILENAME = "pipeline.yaml"
 RUNS_DIRNAME = "runs"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
 STEP_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
 MAX_COPY_BYTES = 50 * 1024 * 1024  # artifacts bigger than this are referenced, not copied
+
+RUN_KINDS = ("run", "sweep")
+# columns added in schema v2 (0.5.0): sweeps and runs launched by mltree itself
+RUN_COLUMNS_V2 = [
+    ("kind", "TEXT NOT NULL DEFAULT 'run'"),   # 'run' or 'sweep' (a parent that groups child runs)
+    ("sweep_id", "TEXT"),                      # the sweep this run belongs to
+    ("sweep", "TEXT"),                         # JSON spec on sweep rows: {metric, mode, grid, source, ...}
+    ("command", "TEXT"),                       # JSON argv when mltree launched the run
+    ("exit_code", "INTEGER"),
+]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -187,6 +197,19 @@ def _check_metrics(value: Any) -> dict[str, float | int]:
     return metrics
 
 
+def _duration(start: str | None, end: str | None) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        a = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if (a.tzinfo is None) != (b.tzinfo is None):
+        return None
+    return round((b - a).total_seconds(), 3)
+
+
 def _loads(s: str | None, default: Any) -> Any:
     if s is None:
         return default
@@ -294,6 +317,13 @@ class Store:
         self.dir.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            have = {r["name"] for r in c.execute("PRAGMA table_info(runs)")}
+            for col, decl in RUN_COLUMNS_V2:
+                if col not in have:  # migrate stores created by 0.4.x and older
+                    c.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_runs_sweep ON runs(sweep_id)")
+            c.execute("UPDATE meta SET value=? WHERE key='schema_version' AND CAST(value AS INTEGER) < ?",
+                      (str(SCHEMA_VERSION), SCHEMA_VERSION))
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def project_name(self) -> str:
@@ -489,9 +519,19 @@ class Store:
         started_at: str | None = None,
         finished_at: str | None = None,
         copy_artifacts: bool = True,
+        sweep_id: str | None = None,
+        kind: str = "run",
+        sweep: dict[str, Any] | None = None,
+        command: list[str] | None = None,
+        exit_code: int | None = None,
     ) -> dict[str, Any]:
         self._require()
         step_info = self.get_step(step)
+        kind = (kind or "run").strip().lower()
+        if kind not in RUN_KINDS:
+            raise MLTreeError(f"kind must be one of {', '.join(RUN_KINDS)}")
+        if sweep is not None and not isinstance(sweep, dict):
+            raise MLTreeError("sweep must be an object like {\"metric\": \"val_rmse\", \"mode\": \"min\"}")
         step = step_info["name"]
         params = _check_json_obj(params, "params")
         metrics = _check_metrics(metrics)
@@ -508,8 +548,20 @@ class Store:
         if parent_run_id:
             parent_run_id = parent_run_id.strip()
             with self._conn() as c:
-                if not c.execute("SELECT 1 FROM runs WHERE id=?", (parent_run_id,)).fetchone():
+                prow = c.execute("SELECT id, kind, sweep_id FROM runs WHERE id=?", (parent_run_id,)).fetchone()
+                if not prow:
                     raise MLTreeError(f"parent_run_id {parent_run_id!r} does not exist; use list_runs to find run ids")
+            if not sweep_id and prow["kind"] == "sweep":
+                sweep_id = prow["id"]  # a child of a sweep row belongs to that sweep
+        if sweep_id is not None and not (isinstance(sweep_id, str) and sweep_id.strip()):
+            sweep_id = None
+        if sweep_id:
+            sweep_id = sweep_id.strip()
+            with self._conn() as c:
+                srow = c.execute("SELECT kind FROM runs WHERE id=?", (sweep_id,)).fetchone()
+            if srow is None or srow["kind"] != "sweep":
+                raise MLTreeError(f"sweep_id {sweep_id!r} is not a sweep; create one with start_sweep")
+            parent_run_id = parent_run_id or sweep_id
 
         # resolve artifacts before writing anything
         resolved: list[tuple[str, str, Path]] = []
@@ -571,15 +623,23 @@ class Store:
             "started_at": started_at,
             "finished_at": finished_at or (now if status in ("succeeded", "failed", "cancelled") else None),
             "created_at": now,
+            "kind": kind,
+            "sweep_id": sweep_id,
+            "sweep": sweep,
+            "command": command,
+            "exit_code": exit_code,
         }
         with self._conn() as c:
             c.execute(
                 "INSERT INTO runs(id, step, status, params, metrics, artifacts, parent_run_id, notes, tags, "
-                "script_sha256, git_commit, started_at, finished_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "script_sha256, git_commit, started_at, finished_at, created_at, kind, sweep_id, sweep, command, exit_code) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id, step, status, json.dumps(params), json.dumps(metrics), json.dumps(art_records),
                     parent_run_id, notes, json.dumps(tags), script_sha, record["git_commit"],
-                    started_at, record["finished_at"], now,
+                    started_at, record["finished_at"], now, kind, sweep_id,
+                    json.dumps(sweep) if sweep is not None else None,
+                    json.dumps(command) if command is not None else None, exit_code,
                 ),
             )
             self._bump(c)
@@ -588,6 +648,7 @@ class Store:
         return record
 
     def _run_row_to_dict(self, r: sqlite3.Row) -> dict[str, Any]:
+        keys = r.keys()
         return {
             "id": r["id"],
             "step": r["step"],
@@ -603,7 +664,81 @@ class Store:
             "started_at": r["started_at"],
             "finished_at": r["finished_at"],
             "created_at": r["created_at"],
+            "kind": r["kind"] if "kind" in keys else "run",
+            "sweep_id": r["sweep_id"] if "sweep_id" in keys else None,
+            "sweep": _loads(r["sweep"], None) if "sweep" in keys and r["sweep"] else None,
+            "command": _loads(r["command"], None) if "command" in keys and r["command"] else None,
+            "exit_code": r["exit_code"] if "exit_code" in keys else None,
+            "duration_s": _duration(r["started_at"], r["finished_at"]),
         }
+
+    def update_run(
+        self,
+        run_id: str,
+        status: str | None = None,
+        metrics: dict[str, float] | None = None,
+        finished_at: str | None = None,
+        exit_code: int | None = None,
+        notes: str | None = None,
+        sweep: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Update a run in place (used by the runner while a run is live). Metrics are merged."""
+        run = self.get_run(run_id)
+        sets: dict[str, Any] = {}
+        if status is not None:
+            status = status.strip().lower()
+            if status not in RUN_STATUSES:
+                raise MLTreeError(f"status must be one of {', '.join(RUN_STATUSES)}")
+            sets["status"] = status
+            if status in ("succeeded", "failed", "cancelled") and not (finished_at or run["finished_at"]):
+                finished_at = utcnow()
+        if metrics:
+            sets["metrics"] = json.dumps({**run["metrics"], **_check_metrics(metrics)})
+        if finished_at is not None:
+            sets["finished_at"] = finished_at
+        if exit_code is not None:
+            sets["exit_code"] = int(exit_code)
+        if notes is not None:
+            sets["notes"] = notes
+        if sweep is not None:
+            sets["sweep"] = json.dumps({**(run["sweep"] or {}), **sweep})
+        if artifacts is not None:
+            sets["artifacts"] = json.dumps(run["artifacts"] + artifacts)
+        if sets:
+            with self._conn() as c:
+                c.execute(f"UPDATE runs SET {', '.join(k + '=?' for k in sets)} WHERE id=?", [*sets.values(), run_id])
+                self._bump(c)
+        new = self.get_run(run_id)
+        run_dir = self.runs_dir / run_id
+        if run_dir.is_dir():
+            (run_dir / "run.json").write_text(json.dumps(new, indent=2) + "\n", encoding="utf-8")
+        return new
+
+    def sweep_children(self, sweep_id: str) -> list[dict[str, Any]]:
+        self._require()
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM runs WHERE sweep_id=? ORDER BY created_at, rowid", (sweep_id,)).fetchall()
+        return [self._run_row_to_dict(r) for r in rows]
+
+    def sweep_summary(self, sweep_id: str, metric: str | None = None, mode: str | None = None) -> dict[str, Any]:
+        """Children count by status and the best child by the sweep's metric (or the one given)."""
+        sw = self.get_run(sweep_id)
+        spec = sw["sweep"] or {}
+        metric = metric or spec.get("metric")
+        mode = (mode or spec.get("mode") or "max").lower()
+        kids = self.sweep_children(sweep_id)
+        counts: dict[str, int] = {}
+        for k in kids:
+            counts[k["status"]] = counts.get(k["status"], 0) + 1
+        best = None
+        if metric:
+            ok = [k for k in kids if k["status"] == "succeeded" and isinstance(k["metrics"].get(metric), (int, float))]
+            if ok:
+                best = (min if mode == "min" else max)(ok, key=lambda k: k["metrics"][metric])
+        return {"sweep_id": sweep_id, "n": len(kids), "counts": counts, "metric": metric, "mode": mode,
+                "best_run_id": best["id"] if best else None, "best_value": best["metrics"][metric] if best else None,
+                "best_params": best["params"] if best else None}
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         self._require()
@@ -900,6 +1035,9 @@ class Store:
             "best_run_id": best["run"]["id"] if best else None,
             "best_value": best["value"] if best else None,
             "metrics": self.metric_names(),
+            "sweeps": {r["id"]: self.sweep_summary(r["id"], metric=None if (r["sweep"] or {}).get("metric") else metric,
+                                                   mode=None if (r["sweep"] or {}).get("metric") else mode)
+                       for r in runs if r["kind"] == "sweep"},
         }
 
     def compare(self, run_ids: list[str]) -> dict[str, Any]:
@@ -945,6 +1083,12 @@ class Store:
         self._require()
         with self._conn() as c:
             return {r["key"] for r in c.execute("SELECT key FROM imports")}
+
+    def imported_run_ids(self) -> dict[str, str]:
+        self._require()
+        with self._conn() as c:
+            return {r["key"]: r["run_id"] for r in c.execute(
+                "SELECT i.key, i.run_id FROM imports i JOIN runs r ON r.id = i.run_id")}
 
     def mark_imported(self, key: str, run_id: str | None, source: str) -> None:
         with self._conn() as c:

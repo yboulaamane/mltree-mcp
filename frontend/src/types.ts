@@ -58,6 +58,56 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  kind?: "run" | "sweep";
+  sweep_id?: string | null;
+  sweep?: SweepSpec | null;
+  command?: string[] | null;
+  exit_code?: number | null;
+  duration_s?: number | null;
+}
+
+export interface SweepSpec {
+  source?: string;
+  metric?: string | null;
+  mode?: "min" | "max";
+  grid?: Record<string, unknown[]> | null;
+  name?: string | null;
+  total?: number;
+  best_run_id?: string | null;
+}
+
+export interface SweepSummary {
+  sweep_id: string;
+  n: number;
+  counts: Record<string, number>;
+  metric: string | null;
+  mode: "min" | "max";
+  best_run_id: string | null;
+  best_value: number | null;
+  best_params: Record<string, unknown> | null;
+}
+
+export interface Plan {
+  step: string;
+  params: Record<string, unknown>;
+  defaults: { params: Record<string, unknown>; source: string; source_run_id: string | null };
+  runnable: boolean;
+  reason: string | null;
+  argv: string[] | null;
+  command?: string;
+  cwd: string;
+  style?: string;
+  python?: string;
+  warnings: string[];
+  parent_run_id: string | null;
+  cli_options?: string[];
+  allow_run: boolean;
+}
+
+export interface LogLine {
+  t: number | null;
+  s: "out" | "err";
+  line: string;
 }
 
 export interface Tree {
@@ -69,6 +119,7 @@ export interface Tree {
   best_run_id: string | null;
   best_value: number | null;
   metrics: string[];
+  sweeps?: Record<string, SweepSummary>;
 }
 
 export interface Script {

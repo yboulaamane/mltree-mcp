@@ -18,7 +18,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const res = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    // X-MLTree marks requests from this app; the server requires it for anything that runs code
+    headers: { "Content-Type": "application/json", "X-MLTree": "1", ...(init?.headers ?? {}) },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, (body as { error?: string }).error ?? res.statusText);

@@ -44,11 +44,18 @@ def build(root: Path = HERE, reset: bool = False) -> Store:
     store.log_run("split", params={"test_size": 0.2, "seed": 42}, metrics={"n_train": 16, "n_test": 4}, tags=demo, notes=note)
 
     base = store.log_run("train", params={"alpha": 1.0, "layers": 1}, metrics={"val_rmse": 0.92}, tags=demo + ["baseline"], notes=note)
-    # an HPO sweep branching from the baseline
-    for alpha, rmse in [(0.1, 0.81), (0.5, 0.74), (3.0, 0.97)]:
+    # an HPO grid sweep branching from the baseline: one sweep row, one child run per alpha
+    grid = [(0.1, 0.81), (0.5, 0.74), (3.0, 0.97)]
+    sweep = store.log_run(
+        "train", kind="sweep", params={"layers": 1}, parent_run_id=base["id"], tags=demo + ["hpo"], notes=note,
+        sweep={"source": "grid", "name": "alpha sweep", "metric": "val_rmse", "mode": "min",
+               "grid": {"alpha": [a for a, _ in grid]}, "total": len(grid)},
+        metrics={"best_val_rmse": min(r for _, r in grid)},
+    )
+    for alpha, rmse in grid:
         store.log_run(
             "train", params={"alpha": alpha, "layers": 1}, metrics={"val_rmse": rmse},
-            parent_run_id=base["id"], tags=demo + ["hpo"], notes=note,
+            sweep_id=sweep["id"], tags=demo + ["hpo"], notes=note,
         )
     deeper = store.log_run(
         "train", params={"alpha": 0.5, "layers": 2}, metrics={"val_rmse": 0.69},
