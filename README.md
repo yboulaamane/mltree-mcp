@@ -15,8 +15,9 @@ Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp v
 
 ![Experiment tree](docs/screenshot-tree.png)
 
-> Status: **0.5.0**. MCP core, map viewer, `scan_project` for existing projects, shareable HTML export, and now
-> **running steps and grid sweeps from the map** (opt-in, see [Run steps from the map](#run-steps-from-the-map)).
+> Status: **0.6.0**. MCP core, map viewer, `scan_project` for existing projects, shareable HTML export, running steps
+> and grid sweeps from the map (opt-in), and now **data versions** and a **compare view with param changes, metric
+> curves and code diffs** (see [Data versions](#data-versions) and [Compare](#compare-param-changes-curves-and-code-diff)).
 > See the [changelog](#changelog).
 
 ## Install
@@ -176,6 +177,39 @@ The built frontend ships inside the Python package (`src/mltree_mcp/static/`), s
 
 ![Compare runs](docs/screenshot-compare.png)
 
+### Data versions
+
+Each step's `inputs` and `outputs` that are files or folders inside the project are fingerprinted. The fingerprint is
+the SHA-256 of the content (a folder hashes its sorted `relative path + file hash` list) and the **version** shown is
+its first 12 hex characters. Hashes are cached in `mltree.db` by path, size and mtime, so unchanged files are not
+re-read. Files over 4 GiB and folders over 5000 files get a quick digest (size + mtime only, marked `~`) instead.
+
+- Runs record the versions they used: `log_run` records inputs and outputs, a run started from the map or by
+  `run_step` records inputs at start and outputs when it succeeds. Runs imported by `scan_project` record none
+  (it never runs or reads your data beyond the scan).
+- The step panel's **Data versions** table compares the files now with the latest run. The node shows
+  **⚠ data changed** when an input changed since that run and **input missing** when one is gone, so you know which
+  steps to re-run.
+- Compare has a *Data versions* row group, and the `data_status(step?)` tool gives the assistant the same view.
+- Only paths are hashed, never executed or parsed. Paths outside the project are shown by name only in the export.
+
+![Data versions in the step panel](docs/screenshot-data.png)
+
+### Compare: param changes, curves and code diff
+
+Tick 2 or more runs (or use the Runs table's **Compare**):
+
+- **Param changes**: for each run, the params that differ from the first one (`alpha: 1 → 0.5`).
+- **Params / metrics / data versions** table, rows that differ marked, and a grouped bar chart of the ticked metrics.
+- **Curves**: step-wise metrics (`MLTREE_METRIC` lines, or `log_run(history=[{"epoch": 1, "loss": 0.9}, ...])`)
+  overlaid per run, with a metric picker and log-y.
+- **Code diff** of two runs' script snapshots, unified or side by side, hunks or the whole file. It is computed in
+  the browser, so it also works in the HTML export.
+
+![Metric curves](docs/screenshot-curves.png)
+
+![Side-by-side code diff](docs/screenshot-diff.png)
+
 ### On a remote server or HPC cluster
 
 The viewer binds to `127.0.0.1` by default. Run it on the server and tunnel the port from your laptop:
@@ -316,7 +350,8 @@ shell. Set `MLTREE_ALLOW_RUN=0` in the server's environment to turn them off, fo
 | `GET /api/active` | runs and sweeps in progress in this viewer |
 | `GET /api/runs/{run_id}/log[?offset=&tail=]` | log lines `{"s": "out"\|"err", "line"}` and `done` |
 | `GET /api/runs/{run_id}/log/stream[?offset=]` | `text/event-stream` of `lines` events, then `end` |
-| `GET /api/runs/{run_id}/history` | step-wise metrics from `MLTREE_METRIC` lines |
+| `GET /api/runs/{run_id}/history` | step-wise metrics (`MLTREE_METRIC` lines or `log_run(history=)`) |
+| `GET /api/data[?step=]` | data versions of every step (or one): each input/output now vs the latest run, `changed_inputs` |
 
 The `POST` routes need the `X-MLTree: 1` header (see [Safety model](#safety-model)).
 
@@ -376,7 +411,9 @@ your machine with `scp you@server:/path/to/project/<project>-mltree.html .`
 | `run_sweep(step, grid, metric?, mode, params?, extra_args?, max_runs=64, wait=True)` | Run every grid combination one after another as children of a sweep run, and return the best one. |
 | `run_log(run_id, tail=200)` / `cancel_run(run_id)` | Follow or stop a run or sweep started with `run_step` / `run_sweep`. |
 | `start_sweep(step, metric?, mode, name?, search_space?, parent_run_id?)` / `finish_sweep(sweep_id, status)` | Group trials that the assistant runs itself: `start_sweep`, then `log_run(..., sweep_id=...)` per trial, then `finish_sweep` returns the best one. |
-| `log_run(step, params?, metrics?, artifacts?, parent_run_id?, notes?, status?, tags?, sweep_id?)` | Record a run. Metrics must be numbers. Artifacts ≤ 50 MB are copied into `.mltree/runs/<run_id>/artifacts/`; bigger ones are referenced. The step's script is snapshotted with its SHA-256 and the git commit. |
+| `log_run(step, params?, metrics?, artifacts?, parent_run_id?, notes?, status?, tags?, sweep_id?, history?, record_data=True)` | Record a run. Metrics must be numbers. Artifacts ≤ 50 MB are copied into `.mltree/runs/<run_id>/artifacts/`; bigger ones are referenced. The step's script is snapshotted with its SHA-256 and the git commit, and the versions of its inputs/outputs are recorded. `history` is a list of step-wise points (`{"epoch": 1, "val_loss": 0.8}`) for the curves. |
+| `data_status(step?)` | Data versions now vs each step's latest run: which inputs changed or are missing, so the assistant knows what to re-run. |
+| `compare_runs(run_ids, code_diff=True)` | Param changes, differing metrics and data versions of 2+ runs, and a unified diff of the first two runs' scripts. |
 | `list_runs(step?, status?, parent_run_id?, limit?)` | Runs, newest first. |
 | `best_run(metric, mode="max"\|"min", step?)` | Best **succeeded** run by a metric. |
 | `open_map(start=True, port?, allow_run=False)` | URL of the map viewer. It starts `mltree-mcp view` in the background if the viewer isn't running, and includes the `ssh -L` tip for remote servers. |
@@ -394,13 +431,13 @@ your-project/
 │   └── train_gcn.py
 └── .mltree/
     ├── pipeline.yaml           # nodes, edges, default params — commit this
-    ├── mltree.db               # SQLite: steps, edges, runs
+    ├── mltree.db               # SQLite: steps, edges, runs, file-hash cache
     └── runs/<run_id>/
         ├── run.json            # params, metrics, parent, status, timestamps
         ├── script.py           # snapshot of the step script for this run
         ├── log.txt             # stdout/stderr of runs started by mltree (stderr lines prefixed)
         ├── metrics.json        # $MLTREE_METRICS_FILE, if the script wrote it
-        ├── metrics_history.jsonl  # one line per MLTREE_METRIC print
+        ├── metrics_history.jsonl  # one line per MLTREE_METRIC print (or log_run history point)
         └── artifacts/          # copied outputs (plots, small models…)
 ```
 
@@ -428,6 +465,8 @@ This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up t
 - Prefer `run_step` over running a step script yourself: it records the run (params, script, log, metrics) by
   itself. Make scripts print `MLTREE_METRIC name=value` lines. For a grid search use `run_sweep`. For trials you
   run yourself (Optuna), use `start_sweep`, then `log_run(..., sweep_id=...)`, then `finish_sweep`.
+- Before re-running, call `data_status` to see which steps have changed inputs; to explain how two runs differ,
+  call `compare_runs`.
 - To answer "which model was best?" use `best_run` (mode "min" for losses/RMSE, "max" for AUC/R²)
   and `list_runs`; don't guess from memory.
 - When the user wants to see the workflow, call `open_map` and give them the URL. When they want to send it to
@@ -477,7 +516,7 @@ npm run dev          # http://localhost:5173, proxies /api to a running `mltree-
 npm run build        # type-checks and writes the bundle into src/mltree_mcp/static/ (commit it)
 ```
 
-Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts). If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
+Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts); for the data-version / curves / diff screenshots run `python scripts/screenshots_data.py --project <copy>` the same way. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
 
 ## Roadmap
 
@@ -485,11 +524,20 @@ Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, s
 2. **Map viewer** ✅ (map, script panel with run snapshots, experiment tree, compare, live refresh)
 3. **`scan_project`** ✅ (static import of existing projects and their MLflow / Optuna / Lightning / wandb results)
 4. **Run steps and sweeps** ✅ (0.5.0: Run button, live logs, auto-recorded runs, grid sweeps, sweep fans, `run_step`)
-5. Data versioning (input/output hashes per run) and compare: param diff, code diff of snapshots, metric curves (0.6.0)
+5. **Data versioning and compare** ✅ (0.6.0: input/output hashes per run, changed-input flags, param changes, code diff, metric curves)
 6. Notes and tags in the viewer; GNN views: dataset stats, static architecture summary (0.7.0)
 7. PyPI release, CI, multi-project viewer (0.8.0)
 
 ## Changelog
+
+**0.6.0**
+- Data versions: inputs/outputs are fingerprinted (SHA-256, cached by size + mtime) and recorded with each run; the
+  step panel, the node badge (**⚠ data changed** / **input missing**), Compare and the export show them.
+- Compare: param changes per run, a data-versions row group, overlaid step-wise curves (SVG, works offline) and a
+  unified / side-by-side code diff of the script snapshots (computed in the browser, works in the export).
+- MCP tools `data_status` and `compare_runs`; `log_run(history=, record_data=)`; `GET /api/data`.
+- Store schema v3 (run `data`, `file_hashes` cache); older databases migrate on open.
+- The viewer runs file hashing off the event loop, so live updates keep flowing on big data folders.
 
 **0.5.0**
 - Run steps from the map (`view --allow-run`): Run dialog with prefilled params and a command preview, live

@@ -38,7 +38,11 @@ function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
       <div className="step-desc">{s.description || s.script_path || "no script"}</div>
       <div className="step-foot">
         <span>{s.run_count} run{s.run_count === 1 ? "" : "s"}</span>
-        {m && <span className="metric">{m[0]} <b>{fmtNum(m[1])}</b></span>}
+        {s.data?.changed_inputs.length ? (
+          <span className="data-flag" title={`Inputs changed since the latest run: ${s.data.changed_inputs.join(", ")}`}>⚠ data changed</span>
+        ) : s.data?.missing_inputs.length ? (
+          <span className="data-flag muted" title={`Missing on disk: ${s.data.missing_inputs.join(", ")}`}>input missing</span>
+        ) : m && <span className="metric">{m[0]} <b>{fmtNum(m[1])}</b></span>}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

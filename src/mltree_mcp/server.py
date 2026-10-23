@@ -121,8 +121,17 @@ def log_run(
     ] = "succeeded",
     tags: Annotated[list[str] | None, Field(description="Optional tags, e.g. ['hpo', 'gcn']")] = None,
     sweep_id: Annotated[str | None, Field(description="Sweep this run is a trial of (from start_sweep)")] = None,
+    history: Annotated[
+        list[dict[str, float]] | None,
+        Field(description="Step-wise metrics for curves, e.g. [{'epoch': 1, 'train_loss': 0.9, 'val_rmse': 1.1}, ...]"),
+    ] = None,
+    record_data: Annotated[
+        bool, Field(description="Fingerprint the step's input/output files now (data versions). False for results from elsewhere")
+    ] = True,
 ) -> dict[str, Any]:
-    """Record one execution of a step: params, metrics, artifacts and its parent run in the experiment tree."""
+    """Record one execution of a step: params, metrics, artifacts and its parent run in the experiment tree.
+    The versions (SHA-256) of the step's input and output files are recorded too, so later runs can tell when the
+    data changed."""
     return _call(
         lambda: _store().log_run(
             step,
@@ -134,8 +143,44 @@ def log_run(
             status=status,
             tags=tags,
             sweep_id=sweep_id,
+            history=history,
+            record_data=record_data,
         )
     )
+
+
+@mcp.tool()
+def data_status(
+    step: Annotated[str | None, Field(description="Only this step (default: all)")] = None,
+) -> dict[str, Any]:
+    """Data versions: the current SHA-256 of every step's input and output files, what the step's latest run used,
+    and which inputs changed since (so the step is stale and should be re-run). Reads files only; runs nothing."""
+    return _call(lambda: _store().data_status(step=step, fresh=True))
+
+
+@mcp.tool()
+def compare_runs(
+    run_ids: Annotated[list[str], Field(description="Two or more run ids; the first is the baseline")],
+    code_diff: Annotated[bool, Field(description="Include a unified diff of the first two runs' script snapshots")] = True,
+) -> dict[str, Any]:
+    """Compare runs: params that differ (baseline -> each run), metrics side by side, data versions used, and a
+    unified diff of the script snapshots of the first two runs."""
+    def go() -> dict[str, Any]:
+        st = _store()
+        cmp = st.compare(run_ids)
+        slim = {
+            "runs": [{k: r[k] for k in ("id", "step", "status", "params", "metrics", "parent_run_id", "created_at")}
+                     for r in cmp["runs"]],
+            "param_changes": cmp["param_changes"],
+            "differing_metrics": cmp["differing_metrics"],
+            "data": cmp["data"],
+            "differing_data": cmp["differing_data"],
+        }
+        if code_diff:
+            slim["code_diff"] = st.code_diff(cmp["runs"][0]["id"], cmp["runs"][1]["id"])
+        return slim
+
+    return _call(go)
 
 
 @mcp.tool()

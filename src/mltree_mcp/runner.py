@@ -335,7 +335,8 @@ class RunManager:
         started_at = _now()
         rec = self.store.log_run(plan["step"], params=params, status="running", started_at=started_at,
                                  sweep_id=sweep_id, parent_run_id=parent_run_id, notes=notes,
-                                 tags=["mltree-run", *(tags or [])], command=plan["argv"])
+                                 tags=["mltree-run", *(tags or [])], command=plan["argv"],
+                                 record_data="inputs")
         run_id = rec["id"]
         run_dir = self.store.runs_dir / run_id
         env = dict(os.environ)
@@ -429,8 +430,14 @@ class RunManager:
             notes = (run["notes"] + "\n" if run["notes"] else "") + "mltree run: " + "; ".join(note_bits)
             if err_tail:
                 notes += "\nstderr (last lines):\n" + "\n".join(err_tail)
+            data = None
+            if status == "succeeded":
+                try:
+                    data = self.store.record_outputs(live.run_id)
+                except (OSError, MLTreeError):
+                    data = None
             self.store.update_run(live.run_id, status=status, metrics=metrics or None, finished_at=_now(),
-                                  exit_code=code, notes=notes,
+                                  exit_code=code, notes=notes, data=data,
                                   artifacts=[{"name": Path(p).name, "source": p, "path": p, "bytes": s, "stored": "reference"}
                                              for p, s in outputs] or None)
         finally:
@@ -573,16 +580,7 @@ class RunManager:
         if live is not None:
             with self._lock:
                 return list(live.history)
-        p = self.store.runs_dir / run_id / "metrics_history.jsonl"
-        if not p.is_file():
-            return []
-        out = []
-        for ln in p.read_text(encoding="utf-8").splitlines():
-            try:
-                out.append(json.loads(ln))
-            except ValueError:
-                pass
-        return out
+        return self.store.metric_history(run_id)
 
     # -- sweeps
     def start_sweep(self, step: str, grid: dict[str, list[Any]], base_params: dict[str, Any] | None = None,

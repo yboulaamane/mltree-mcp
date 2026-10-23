@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mltree-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "An MCP server that maps your ML / GNN workflow as a node graph and records every experiment as a branching tree, while Codex or Claude Code works."
 readme = "README.md"
 requires-python = ">=3.11"

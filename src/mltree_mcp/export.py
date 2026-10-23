@@ -47,7 +47,19 @@ def _portable(store: Store, run: dict[str, Any]) -> dict[str, Any]:
             a = str(a)
             out.append(a.replace(root + "/", "").replace(root, ".") if root in a else a)
         run = {**run, "command": out}
+    if run.get("data"):
+        run = {**run, "data": _portable_paths(run["data"])}
     return run
+
+
+def _portable_paths(obj: Any) -> Any:
+    """Data fingerprints of files outside the project carry absolute paths; keep only the file name."""
+    if isinstance(obj, dict):
+        return {k: (Path(v).name if k == "path" and isinstance(v, str) and Path(v).is_absolute() else _portable_paths(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [Path(v).name if isinstance(v, str) and Path(v).is_absolute() else _portable_paths(v) for v in obj]
+    return obj
 
 
 def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]:
@@ -78,6 +90,11 @@ def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]
                     run_scripts[s["run_id"]] = {"path": f.relative_to(store.root).as_posix(), "sha256": blob(f.read_bytes()),
                                                 "created_at": s["created_at"]}
         scripts[name] = entry
+    histories = {r["id"]: h for r in runs if (h := store.metric_history(r["id"]))}
+    try:
+        data_status = _portable_paths(store.data_status(fresh=True))
+    except (OSError, MLTreeError):
+        data_status = None
     # don't leak the absolute server path of the project into a file meant for sharing
     pipeline = {**pipeline, "root": pipeline["project"]}
     return {
@@ -91,6 +108,8 @@ def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]
         "scripts": scripts,
         "run_scripts": run_scripts,
         "blobs": blobs,
+        "histories": histories,
+        "data_status": data_status,
     }
 
 

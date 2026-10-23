@@ -162,6 +162,17 @@ def test_renders_offline_in_headless_chrome(demo, tmp_path):
         page.goto(path.as_uri() + "#/compare?ids=" + ",".join(ids))
         page.wait_for_selector("table.compare")
         page.wait_for_selector(".plot-lite svg rect")
+        # 0.6.0: param changes, step-wise curves and a code diff, all from the embedded snapshot
+        base = next(r["id"] for r in demo.list_runs(step="train", limit=100) if "baseline" in r["tags"])
+        deeper = next(r["id"] for r in demo.list_runs(step="train", limit=100) if "gcn-2layer" in r["tags"])
+        page.goto(path.as_uri() + f"#/compare?ids={base},{deeper}")
+        page.wait_for_selector(".changes")
+        page.wait_for_selector(".linechart svg polyline")
+        assert page.locator(".linechart svg polyline").count() == 2
+        page.wait_for_selector("table.diff tr.add")
+        assert "MLTREE_METRIC" in page.locator("table.diff tr.add").first.inner_text()
+        page.click("text=Side by side")
+        page.wait_for_selector("table.diff.split")
         # PNG / SVG of the map from the Export menu
         page.click("text=Workflow map")
         page.wait_for_selector(".react-flow__node")
@@ -186,3 +197,16 @@ def test_runs_are_portable_and_keep_sweeps(demo):
     sweeps = [r for r in snap["runs"] if r["kind"] == "sweep"]
     assert len(sweeps) == 1 and sweeps[0]["sweep"]["metric"] == "val_rmse"
     assert sum(r["sweep_id"] == sweeps[0]["id"] for r in snap["runs"]) == 3
+
+
+def test_snapshot_has_histories_and_data_versions(demo):
+    snap = build_snapshot(demo)
+    train = [r for r in snap["runs"] if r["step"] == "train" and r.get("kind") != "sweep" and r["status"] == "succeeded"]
+    assert all(r["id"] in snap["histories"] for r in train) and train
+    assert snap["histories"][train[0]["id"]][-1]["epoch"] in (20, 30)
+    ds = snap["data_status"]
+    assert ds["steps"]["load_smiles"]["inputs"][0]["exists"] and ds["steps"]["load_smiles"]["inputs"][0]["version"]
+    assert str(demo.root) not in json.dumps(ds) and str(demo.root) not in json.dumps(snap["runs"])
+    # a fingerprint outside the project keeps only the file name
+    run = {"id": "x", "data": {"inputs": {"/abs/where/big.h5": {"path": "/abs/where/big.h5", "version": "abc"}}}}
+    assert export_mod._portable(demo, run)["data"]["inputs"]["/abs/where/big.h5"]["path"] == "big.h5"

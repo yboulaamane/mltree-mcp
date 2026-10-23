@@ -20,6 +20,57 @@ export interface StepNode {
   status: Status;
   run_count: number;
   latest_run: LatestRun | null;
+  data?: NodeData | null;
+}
+
+/** Content fingerprint of one data file/dir (SHA-256; `version` = first 12 hex chars). */
+export interface DataFp {
+  path: string | null;
+  exists: boolean;
+  kind?: "file" | "dir";
+  bytes?: number;
+  files?: number;
+  mtime?: string;
+  sha256?: string;
+  version?: string;
+  quick?: boolean;
+}
+
+export interface NodeData {
+  status: "ok" | "changed" | "missing" | "no_record";
+  last_run_id: string | null;
+  changed_inputs: string[];
+  missing_inputs: string[];
+  changed_outputs: string[];
+  versions: Record<string, string | null | undefined>;
+}
+
+export interface DataItem extends DataFp {
+  name: string;
+  run_version: string | null;
+  changed: boolean;
+  producer_run_id?: string;
+  also_found?: string[];
+}
+
+export interface StepData {
+  step: string;
+  status: NodeData["status"];
+  last_run_id: string | null;
+  inputs: DataItem[];
+  outputs: DataItem[];
+  changed_inputs: string[];
+  changed_outputs: string[];
+  missing_inputs: string[];
+}
+
+export interface DataStatus {
+  steps: Record<string, StepData>;
+  data: Record<string, { name: string; path: string | null; exists: boolean; version: string | null; bytes: number | null;
+    produced_by_steps: string[]; used_by_steps: string[];
+    versions: { version: string; first_seen: string; produced_by: string[]; used_by: string[] }[] }>;
+  changed_steps: string[];
+  summary: string;
 }
 
 export interface Edge {
@@ -64,6 +115,7 @@ export interface Run {
   command?: string[] | null;
   exit_code?: number | null;
   duration_s?: number | null;
+  data?: { inputs?: Record<string, DataFp>; outputs?: Record<string, DataFp> } | null;
 }
 
 export interface SweepSpec {
@@ -146,4 +198,10 @@ export interface Compare {
   metric_keys: string[];
   differing_params: string[];
   differing_metrics: string[];
+  data?: { name: string; role: "input" | "output"; versions: (string | null)[]; differs: boolean }[];
+  differing_data?: string[];
+  param_changes?: { run_id: string; changes: { key: string; from: unknown; to: unknown }[] }[];
+  has_history?: Record<string, boolean>;
 }
+
+export type HistoryPoint = Record<string, number>;

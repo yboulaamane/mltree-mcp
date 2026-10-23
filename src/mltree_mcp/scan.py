@@ -1361,7 +1361,7 @@ def scan_project(  # noqa: C901 - one linear pipeline, easier to read in one pla
             run = store.log_run(step, params={k: v for k, v in fr.params.items() if _jsonable(v)}, metrics=fr.metrics,
                                 parent_run_id=key_to_run.get(fr.parent_key) if fr.parent_key else None, notes=fr.notes,
                                 status=fr.status, tags=_dedupe(["imported", fr.source, *fr.tags]),
-                                started_at=fr.started_at, finished_at=fr.finished_at, kind=fr.kind, sweep=fr.sweep)
+                                started_at=fr.started_at, finished_at=fr.finished_at, kind=fr.kind, sweep=fr.sweep, record_data=False)
             store.mark_imported(fr.key, run["id"], fr.origin)
             key_to_run[fr.key] = run["id"]
             entry["action"], entry["run_id"] = "imported", run["id"]

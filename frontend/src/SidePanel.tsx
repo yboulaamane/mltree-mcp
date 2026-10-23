@@ -5,6 +5,7 @@ import { STATUS_LABEL, fmtTime, fmtVal, shortId } from "./util";
 import RunsTable from "./RunsTable";
 import type { Theme } from "./App";
 import { RUN_OFF_HINT, runnable, useRuns } from "./runctx";
+import DataSection from "./DataSection";
 
 const CodeView = lazy(() => import("./CodeView"));
 
@@ -53,6 +54,8 @@ export default function SidePanel(props: {
           ? Object.entries(step.params).map(([k, v]) => <code key={k} className="chip">{k}={fmtVal(v)}</code>)
           : <em>–</em>}</div>
       </div>
+
+      <DataSection step={step} revision={revision} onRun={(id) => { if (!props.selected.includes(id)) props.toggleRun(id); }} />
 
       <section className="code-section">
         <div className="section-head">

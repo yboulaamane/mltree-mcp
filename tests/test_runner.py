@@ -227,5 +227,5 @@ def test_migrates_v1_db(tmp_path):
     sw = s2.log_run("a", kind="sweep")
     assert s2.get_run(sw["id"])["kind"] == "sweep"
     with sqlite3.connect(db) as c:
-        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
+        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
     json.dumps(s2.run_tree())  # still serialisable

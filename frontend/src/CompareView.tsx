@@ -4,6 +4,8 @@ import type { Compare, Run } from "./types";
 import { STATUS_LABEL, fmtVal, shortId } from "./util";
 import RunsTable from "./RunsTable";
 import type { Theme } from "./App";
+import Curves from "./Curves";
+import CodeDiff from "./CodeDiff";
 
 const PlotBar = lazy(() => import("./PlotBar"));
 
@@ -37,6 +39,8 @@ export default function CompareView(props: { theme: Theme; revision: number; sel
   }
   const paramKeys = cmp ? (onlyDiff ? cmp.differing_params : cmp.param_keys) : [];
   const metricKeys = cmp ? (onlyDiff ? cmp.differing_metrics : cmp.metric_keys) : [];
+  const dataRows = cmp?.data ? (onlyDiff ? cmp.data.filter((d) => d.differs) : cmp.data) : [];
+  const withCode = cmp ? cmp.runs.filter((r) => r.script_sha256) : [];
 
   return (
     <div className="page">
@@ -47,6 +51,18 @@ export default function CompareView(props: { theme: Theme; revision: number; sel
       {error && <div className="banner error">{error}</div>}
       {cmp && (
         <>
+          {cmp.param_changes && cmp.param_changes.some((c) => c.changes.length) && (
+            <div className="changes card pad-x">
+              {cmp.param_changes.map((c) => (
+                <div key={c.run_id} className="small">
+                  <span className="mono">{shortId(cmp.runs[0].id)} → {shortId(c.run_id)}</span>:{" "}
+                  {c.changes.length ? c.changes.map((x) => (
+                    <code key={x.key} className="chip">{x.key}: {fmtVal(x.from)} → {fmtVal(x.to)}</code>
+                  )) : <span className="muted">same params</span>}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="table-wrap card">
             <table className="compare">
               <thead>
@@ -87,6 +103,13 @@ export default function CompareView(props: { theme: Theme; revision: number; sel
                     </tr>
                   );
                 })}
+                {dataRows.length > 0 && <tr className="group"><td colSpan={cmp.runs.length + 1}>Data versions</td></tr>}
+                {dataRows.map((d) => (
+                  <tr key={`d-${d.role}-${d.name}`} className={d.differs ? "diff" : ""}>
+                    <th><span className="muted small">{d.role === "input" ? "in" : "out"}</span> <code>{d.name}</code></th>
+                    {d.versions.map((v, i) => <td key={cmp.runs[i].id} className="mono" title={v ?? "not recorded"}>{v ?? "–"}</td>)}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -97,6 +120,10 @@ export default function CompareView(props: { theme: Theme; revision: number; sel
               </Suspense>
             ) : <p className="muted pad">Tick metric rows to chart them.</p>}
           </div>
+          <Curves runs={cmp.runs} revision={props.revision} />
+          {withCode.length >= 2
+            ? <CodeDiff runs={withCode} />
+            : <div className="card"><p className="muted pad">Code diff needs 2 runs with a script snapshot.</p></div>}
         </>
       )}
     </div>

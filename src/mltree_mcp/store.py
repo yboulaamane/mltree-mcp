@@ -36,7 +36,7 @@ STORE_DIRNAME = ".mltree"
 DB_FILENAME = "mltree.db"
 PIPELINE_FILENAME = "pipeline.yaml"
 RUNS_DIRNAME = "runs"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
 STEP_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
@@ -50,6 +50,8 @@ RUN_COLUMNS_V2 = [
     ("sweep", "TEXT"),                         # JSON spec on sweep rows: {metric, mode, grid, source, ...}
     ("command", "TEXT"),                       # JSON argv when mltree launched the run
     ("exit_code", "INTEGER"),
+    # schema v3 (0.6.0): data versions, {"inputs": {name: fingerprint}, "outputs": {...}}
+    ("data", "TEXT"),
 ]
 
 SCHEMA = """
@@ -111,6 +113,13 @@ CREATE TABLE IF NOT EXISTS imports (         -- external results already importe
     run_id      TEXT,
     source      TEXT NOT NULL,
     imported_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_hashes (     -- sha256 cache for data versioning (fast path: same size+mtime)
+    path     TEXT PRIMARY KEY,
+    size     INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    sha256   TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_step    ON runs(step, created_at);
@@ -208,6 +217,29 @@ def _duration(start: str | None, end: str | None) -> float | None:
     if (a.tzinfo is None) != (b.tzinfo is None):
         return None
     return round((b - a).total_seconds(), 3)
+
+
+HISTORY_FILENAME = "metrics_history.jsonl"
+MAX_HISTORY_POINTS = 100_000
+
+
+def _check_history(value: Any) -> list[dict[str, float]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise MLTreeError('history must be a list of {"step": n, "metric": value} objects')
+    if len(value) > MAX_HISTORY_POINTS:
+        raise MLTreeError(f"history is limited to {MAX_HISTORY_POINTS} points")
+    out = []
+    for i, p in enumerate(value):
+        p = _check_metrics(p)
+        if not p:
+            continue
+        p = dict(p)
+        if "step" not in p:
+            p["step"] = p["epoch"] if "epoch" in p else i
+        out.append(p)
+    return out
 
 
 def _loads(s: str | None, default: Any) -> Any:
@@ -524,9 +556,15 @@ class Store:
         sweep: dict[str, Any] | None = None,
         command: list[str] | None = None,
         exit_code: int | None = None,
+        record_data: bool | str = True,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Record a run. ``record_data``: True = fingerprint the step's inputs and outputs now, "inputs" = inputs only
+        (a run that is about to start), False = none (imported results). ``history``: step-wise metrics, a list of
+        {"step": n, "<metric>": value, ...} (e.g. one per epoch)."""
         self._require()
         step_info = self.get_step(step)
+        hist = _check_history(history)
         kind = (kind or "run").strip().lower()
         if kind not in RUN_KINDS:
             raise MLTreeError(f"kind must be one of {', '.join(RUN_KINDS)}")
@@ -607,6 +645,16 @@ class Store:
             script_sha = hashlib.sha256(data).hexdigest()
             (run_dir / ("script" + (src.suffix or ".py"))).write_bytes(data)
 
+        data = None
+        if record_data:
+            from .dataver import DataIndex
+
+            idx = DataIndex(self)
+            data = idx.step_data(step_info, ("inputs",) if record_data == "inputs" or kind == "sweep" else ("inputs", "outputs"))
+            idx.flush()
+        if hist:
+            (run_dir / HISTORY_FILENAME).write_text("".join(json.dumps(p) + "\n" for p in hist), encoding="utf-8")
+
         now = utcnow()
         record = {
             "id": run_id,
@@ -628,18 +676,20 @@ class Store:
             "sweep": sweep,
             "command": command,
             "exit_code": exit_code,
+            "data": data,
         }
         with self._conn() as c:
             c.execute(
                 "INSERT INTO runs(id, step, status, params, metrics, artifacts, parent_run_id, notes, tags, "
-                "script_sha256, git_commit, started_at, finished_at, created_at, kind, sweep_id, sweep, command, exit_code) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "script_sha256, git_commit, started_at, finished_at, created_at, kind, sweep_id, sweep, command, exit_code, data) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id, step, status, json.dumps(params), json.dumps(metrics), json.dumps(art_records),
                     parent_run_id, notes, json.dumps(tags), script_sha, record["git_commit"],
                     started_at, record["finished_at"], now, kind, sweep_id,
                     json.dumps(sweep) if sweep is not None else None,
                     json.dumps(command) if command is not None else None, exit_code,
+                    json.dumps(data) if data is not None else None,
                 ),
             )
             self._bump(c)
@@ -669,6 +719,7 @@ class Store:
             "sweep": _loads(r["sweep"], None) if "sweep" in keys and r["sweep"] else None,
             "command": _loads(r["command"], None) if "command" in keys and r["command"] else None,
             "exit_code": r["exit_code"] if "exit_code" in keys else None,
+            "data": _loads(r["data"], None) if "data" in keys and r["data"] else None,
             "duration_s": _duration(r["started_at"], r["finished_at"]),
         }
 
@@ -682,6 +733,7 @@ class Store:
         notes: str | None = None,
         sweep: dict[str, Any] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update a run in place (used by the runner while a run is live). Metrics are merged."""
         run = self.get_run(run_id)
@@ -705,6 +757,8 @@ class Store:
             sets["sweep"] = json.dumps({**(run["sweep"] or {}), **sweep})
         if artifacts is not None:
             sets["artifacts"] = json.dumps(run["artifacts"] + artifacts)
+        if data is not None:
+            sets["data"] = json.dumps({**(run["data"] or {}), **data})
         if sets:
             with self._conn() as c:
                 c.execute(f"UPDATE runs SET {', '.join(k + '=?' for k in sets)} WHERE id=?", [*sets.values(), run_id])
@@ -833,6 +887,18 @@ class Store:
                 }
             )
             s["status"] = lr["status"] if lr is not None else "not_run"
+        try:
+            ds = self.data_status()["steps"]
+        except (OSError, sqlite3.Error, MLTreeError):  # data versions must never break the map
+            ds = {}
+        for s in steps:
+            d = ds.get(s["name"])
+            s["data"] = None if d is None else {
+                "status": d["status"], "last_run_id": d["last_run_id"],
+                "changed_inputs": d["changed_inputs"], "missing_inputs": d["missing_inputs"],
+                "changed_outputs": d["changed_outputs"],
+                "versions": {x["name"]: x.get("version") for x in d["inputs"] + d["outputs"]},
+            }
         return {
             "project": self.project_name(),
             "root": str(self.root),
@@ -1054,13 +1120,102 @@ class Store:
             vals = [json.dumps(r[field].get(key), sort_keys=True) for r in runs]
             return len(set(vals)) > 1
 
+        data_rows = []
+        for role in ("inputs", "outputs"):
+            names = sorted({n for r in runs for n in ((r.get("data") or {}).get(role) or {})})
+            for n in names:
+                vers = [(((r.get("data") or {}).get(role) or {}).get(n) or {}).get("version") for r in runs]
+                data_rows.append({"name": n, "role": role[:-1], "versions": vers,
+                                  "differs": len({v for v in vers}) > 1})
+        base = runs[0]
+        changes = [{"run_id": r["id"], "changes": [
+            {"key": k, "from": base["params"].get(k), "to": r["params"].get(k)}
+            for k in pkeys if json.dumps(base["params"].get(k), sort_keys=True) != json.dumps(r["params"].get(k), sort_keys=True)
+        ]} for r in runs[1:]]
         return {
             "runs": runs,
             "param_keys": pkeys,
             "metric_keys": mkeys,
             "differing_params": [k for k in pkeys if differs(k, "params")],
             "differing_metrics": [k for k in mkeys if differs(k, "metrics")],
+            "data": data_rows,
+            "differing_data": [f"{d['role']}:{d['name']}" for d in data_rows if d["differs"]],
+            "param_changes": changes,
+            "has_history": {r["id"]: (self.runs_dir / r["id"] / HISTORY_FILENAME).is_file() for r in runs},
         }
+
+    def code_diff(self, run_a: str, run_b: str, context: int = 3, max_lines: int = 400) -> dict[str, Any]:
+        """Unified diff of the script snapshots stored with two runs."""
+        import difflib
+
+        a, b = self.get_run(run_a), self.get_run(run_b)
+        fa, fb = self._snapshot_file(run_a), self._snapshot_file(run_b)
+        if fa is None or fb is None:
+            missing = [r for r, f in ((run_a, fa), (run_b, fb)) if f is None]
+            return {"a": run_a, "b": run_b, "available": False, "identical": None,
+                    "message": f"No script snapshot for {', '.join(missing)}"}
+        ta = fa.read_text(encoding="utf-8", errors="replace").splitlines()
+        tb = fb.read_text(encoding="utf-8", errors="replace").splitlines()
+        diff = list(difflib.unified_diff(ta, tb, f"{a['step']}@{run_a}", f"{b['step']}@{run_b}", n=context, lineterm=""))
+        added = sum(1 for ln in diff if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in diff if ln.startswith("-") and not ln.startswith("---"))
+        return {"a": run_a, "b": run_b, "available": True, "identical": not diff, "added": added, "removed": removed,
+                "diff": "\n".join(diff[:max_lines]), "truncated": len(diff) > max_lines}
+
+    # ------------------------------------------------------ data versions
+
+    def hash_cache(self) -> dict[str, tuple[int, int, str]]:
+        with self._conn() as c:
+            return {r["path"]: (r["size"], r["mtime_ns"], r["sha256"]) for r in c.execute("SELECT * FROM file_hashes")}
+
+    def put_hashes(self, entries: dict[str, tuple[int, int, str]]) -> None:
+        with self._conn() as c:  # no revision bump: a cache, not a change the viewer must redraw for
+            c.executemany(
+                "INSERT INTO file_hashes(path, size, mtime_ns, sha256) VALUES (?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+                "size=excluded.size, mtime_ns=excluded.mtime_ns, sha256=excluded.sha256",
+                [(k, *v) for k, v in entries.items()],
+            )
+
+    def steps_raw(self) -> list[dict[str, Any]]:
+        self._require()
+        with self._conn() as c:
+            return [self._step_row_to_dict(r) for r in c.execute("SELECT * FROM steps ORDER BY id")]
+
+    def runs_with_data(self) -> list[dict[str, Any]]:
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM runs WHERE data IS NOT NULL ORDER BY created_at, rowid").fetchall()
+        return [self._run_row_to_dict(r) for r in rows]
+
+    def data_status(self, step: str | None = None, fresh: bool = False) -> dict[str, Any]:
+        """Data versions of each step's inputs/outputs now vs its latest succeeded run; flags changed inputs."""
+        from .dataver import data_status
+
+        self._require()
+        if step:
+            step = self.get_step(step)["name"]
+        return data_status(self, step=step, fresh=fresh)
+
+    def record_outputs(self, run_id: str) -> dict[str, Any]:
+        """Fingerprint a run's step outputs now (the runner calls this when a run succeeds)."""
+        from .dataver import DataIndex
+
+        run = self.get_run(run_id)
+        idx = DataIndex(self)
+        data = idx.step_data(self.get_step(run["step"]), ("outputs",))
+        idx.flush()
+        return data
+
+    def metric_history(self, run_id: str) -> list[dict[str, Any]]:
+        p = self.runs_dir / run_id / HISTORY_FILENAME
+        if not p.is_file():
+            return []
+        out = []
+        for ln in p.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(ln))
+            except ValueError:
+                pass
+        return out
 
     # ------------------------------------------------------ scan helpers
 

@@ -15,6 +15,8 @@ Routes (all JSON unless noted):
     GET  /api/tree[?metric=&mode=min|max&step=]   run forest from parent_run_id + best run
     GET  /api/compare?ids=a,b[,c...]
     GET  /api/metrics                        numeric metric names seen in runs
+    GET  /api/data[?step=]                   data versions: current vs latest run, changed inputs, catalog
+    GET  /api/runs/{run_id}/history          step-wise metrics (MLTREE_METRIC lines or log_run history)
     GET  /api/export[?scripts=0|1]          the shareable single-file HTML export (download)
     GET  /api/events                         text/event-stream; "revision" events on every store change
 
@@ -27,7 +29,6 @@ Routes (all JSON unless noted):
     GET  /api/active                         runs and sweeps running in this viewer
     GET  /api/runs/{run_id}/log[?offset=&tail=]   log lines (JSON)
     GET  /api/runs/{run_id}/log/stream[?offset=]  text/event-stream of log lines, then an "end" event
-    GET  /api/runs/{run_id}/history          step-wise metrics from MLTREE_METRIC lines
     GET  /*                                  the single-page app (src/mltree_mcp/static)
 """
 
@@ -89,7 +90,8 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
     def handle(fn: Callable[[Request], Any]):
         async def endpoint(request: Request) -> Response:
             try:
-                result = fn(request)
+                # sync handlers run in a thread: hashing data files must not block the event loop / SSE
+                result = fn(request) if asyncio.iscoroutinefunction(fn) else await asyncio.to_thread(fn, request)
                 if asyncio.iscoroutine(result):
                     result = await result
             except RunForbidden as exc:
@@ -256,6 +258,9 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
         ids = [i for i in request.query_params.get("ids", "").split(",") if i.strip()]
         return store().compare(ids)
 
+    def data(request: Request):
+        return store().data_status(step=request.query_params.get("step") or None)
+
     def metrics(_: Request):
         return {"metrics": store().metric_names()}
 
@@ -318,6 +323,7 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
         Route("/api/tree", handle(tree)),
         Route("/api/compare", handle(compare)),
         Route("/api/metrics", handle(metrics)),
+        Route("/api/data", handle(data)),
         Route("/api/export", handle(export)),
         Route("/api/events", events),
         Route("/api/{rest:path}", lambda r: JSONResponse({"error": "Not found"}, status_code=404)),

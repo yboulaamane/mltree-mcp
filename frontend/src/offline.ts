@@ -5,7 +5,7 @@
  * present, api() answers the same /api/* routes as the Python viewer from the snapshot, so every view works
  * offline from file:// with no server.
  */
-import type { Pipeline, Run, Snapshot } from "./types";
+import type { DataStatus, HistoryPoint, Pipeline, Run, Snapshot } from "./types";
 
 export interface ScriptRef {
   path: string;
@@ -24,6 +24,8 @@ export interface ExportSnapshot {
   scripts: Record<string, { current: ScriptRef | null; snapshots: Snapshot[] }>;
   run_scripts: Record<string, ScriptRef>;
   blobs: Record<string, string>;
+  histories?: Record<string, HistoryPoint[]>; // 0.6.0+
+  data_status?: DataStatus | null;           // 0.6.0+
 }
 
 let cached: ExportSnapshot | null | undefined;
@@ -93,6 +95,11 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
       return { ok: true, project: d.pipeline.project, root: d.pipeline.root, initialized: true, revision: 0, offline: true, allow_run: false };
     case "pipeline":
       return d.pipeline;
+    case "data": {
+      if (!d.data_status) throw new OfflineError(404, "This export has no data versions (made with mltree < 0.6).");
+      const st = q.get("step");
+      return st ? { ...d.data_status, steps: { [st]: d.data_status.steps[st] } } : d.data_status;
+    }
     case "metrics":
       return { metrics: d.metrics };
     case "steps": {
@@ -113,6 +120,8 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
       break;
     }
     case "runs": {
+      if (parts[1] && parts[2] === "history") return { run_id: parts[1], history: d.histories?.[parts[1]] ?? [] };
+      if (parts[1] && parts[2] === "log") return { run_id: parts[1], lines: [], next: 0, done: true, live: false };
       if (parts[1]) return run(d, parts[1]);
       let rs = d.runs;
       const st = q.get("step"), status = q.get("status"), parent = q.get("parent_run_id");
@@ -143,7 +152,20 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
       const pk = [...new Set(runs.flatMap((r) => Object.keys(r.params)))].sort();
       const mk = [...new Set(runs.flatMap((r) => Object.keys(r.metrics)))].sort();
       const differs = (k: string, f: "params" | "metrics") => new Set(runs.map((r) => stable((r[f] as Record<string, unknown>)[k]))).size > 1;
-      return { runs, param_keys: pk, metric_keys: mk, differing_params: pk.filter((k) => differs(k, "params")), differing_metrics: mk.filter((k) => differs(k, "metrics")) };
+      const data = (["inputs", "outputs"] as const).flatMap((role) =>
+        [...new Set(runs.flatMap((r) => Object.keys(r.data?.[role] ?? {})))].sort().map((name) => {
+          const versions = runs.map((r) => r.data?.[role]?.[name]?.version ?? null);
+          return { name, role: role === "inputs" ? "input" as const : "output" as const, versions, differs: new Set(versions).size > 1 };
+        }));
+      const base = runs[0];
+      return {
+        runs, param_keys: pk, metric_keys: mk,
+        differing_params: pk.filter((k) => differs(k, "params")), differing_metrics: mk.filter((k) => differs(k, "metrics")),
+        data, differing_data: data.filter((x) => x.differs).map((x) => `${x.role}:${x.name}`),
+        param_changes: runs.slice(1).map((r) => ({ run_id: r.id, changes: pk.filter((k) => stable(base.params[k]) !== stable(r.params[k]))
+          .map((k) => ({ key: k, from: base.params[k], to: r.params[k] })) })),
+        has_history: Object.fromEntries(runs.map((r) => [r.id, (d.histories?.[r.id] ?? []).length > 0])),
+      };
     }
   }
   throw new OfflineError(404, "Not found");
