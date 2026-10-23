@@ -1,0 +1,82 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python }}, ${{ matrix.os }}${{ matrix.mcp && format(', mcp {0}', matrix.mcp) || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+          - os: ubuntu-latest   # the 1.x MCP SDK (FastMCP) is still supported
+            python: "3.12"
+            mcp: "<2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          if [ -n "${{ matrix.mcp }}" ]; then python -m pip install "mcp${{ matrix.mcp }}"; fi
+          python -c "import mcp, importlib.metadata as m; print('mcp', m.version('mcp'))"
+      - name: Test
+        run: python -m pytest -q
+
+  frontend:
+    name: frontend bundle is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build   # tsc type-check + both bundles
+        working-directory: frontend
+      - name: Committed static/ matches the build
+        run: |
+          git status --porcelain src/mltree_mcp/static
+          test -z "$(git status --porcelain src/mltree_mcp/static)" || {
+            echo "::error::src/mltree_mcp/static is stale: run 'npm run build' in frontend/ and commit it"; exit 1; }
+
+  package:
+    name: build + twine check + install the wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Smoke-test the wheel in a clean venv
+        run: |
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/wheel-env/bin/mltree-mcp --version
+          /tmp/wheel-env/bin/python -c "from mltree_mcp.viewer import STATIC_DIR; assert (STATIC_DIR / 'index.html').is_file(); assert (STATIC_DIR / 'export' / 'export.js').is_file(); print('static ok')"
