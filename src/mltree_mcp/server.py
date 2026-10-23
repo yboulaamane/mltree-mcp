@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
@@ -455,7 +456,14 @@ def _open_map(start: bool = True, port: int | None = None, allow_run: bool = Fal
         "project": str(root),
         "remote_tip": f"On a remote server, tunnel it from your laptop: ssh -L {port}:localhost:{port} user@server, then open {url}",
     }
-    if health and health.get("root") and health["root"] != str(root):
+    if health and health.get("multi"):
+        match = next((p for p in health.get("projects", []) if p.get("root") == str(root)), None)
+        if match:
+            result["url"] = f"{url}/p/{match['slug']}/"
+        else:
+            result["warning"] = (f"A multi-project viewer on port {port} doesn't serve {root}; add it with "
+                                 f"`mltree-mcp projects add {root}` and restart it, or pass another port.")
+    elif health and health.get("root") and health["root"] != str(root):
         result["warning"] = f"A viewer for another project ({health['root']}) is already on port {port}; pass another port."
     if health is not None:
         result["allow_run"] = bool(health.get("allow_run"))
@@ -547,6 +555,12 @@ def main(argv: list[str] | None = None) -> None:
     v.add_argument("--allow-run", action="store_true",
                    help="Enable the Run / Sweep buttons (executes the project's scripts; forces a 127.0.0.1 bind)")
     v.add_argument("--python", default=None, help="Interpreter for runs (default $MLTREE_PYTHON, the project's .venv, then PATH)")
+    v.add_argument("--projects", nargs="*", default=None, metavar="DIR",
+                   help="Serve several projects with a switcher (no DIRs: the ones in ~/.mltree/projects.json)")
+    pr = sub.add_parser("projects", help="Manage ~/.mltree/projects.json, the project list of `view --projects`")
+    pr.add_argument("action", choices=["list", "add", "remove"])
+    pr.add_argument("folder", nargs="?", help="Project folder (add/remove) or name (remove)")
+    pr.add_argument("--name", default=None, help="Display name (add)")
     sc = sub.add_parser("scan", help="Statically scan an existing project and write its map to .mltree/")
     sc.add_argument("--project", dest="view_project", help="Project directory")
     sc.add_argument("--path", default=".", help="Sub-folder to scan (default: the whole project)")
@@ -616,13 +630,39 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
         print(json.dumps(res, indent=2, default=str))
         return
+    if args.command == "projects":
+        from . import projects as reg
+
+        try:
+            if args.action == "list":
+                items = reg.load_registry()
+                print(f"{reg.registry_path()}: {len(items)} project(s)")
+                for it in items:
+                    print(f"  {it.get('name') or Path(it['path']).name:<24} {it['path']}")
+                return
+            if not args.folder:
+                raise MLTreeError(f"`projects {args.action}` needs a folder")
+            res = reg.add_project(args.folder, args.name) if args.action == "add" else reg.remove_project(args.folder)
+        except MLTreeError as exc:
+            print(f"mltree-mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        print(f"{res['registry']}: {len(res['projects'])} project(s)")
+        return
     if args.command == "view":
         from .viewer import DEFAULT_HOST, DEFAULT_PORT, serve
 
         host = args.host or os.environ.get("MLTREE_VIEW_HOST") or DEFAULT_HOST
         port = args.port or int(os.environ.get("MLTREE_VIEW_PORT") or DEFAULT_PORT)
         try:
-            serve(host=host, port=port, allow_run=args.allow_run, python=args.python)
+            multi = None
+            if args.projects is not None:
+                from .projects import load_registry, registry_path
+
+                multi = list(args.projects) or load_registry()
+                if not multi:
+                    raise MLTreeError(f"No projects given and {registry_path()} lists none; "
+                                      "use `mltree-mcp projects add <folder>`")
+            serve(host=host, port=port, allow_run=args.allow_run, python=args.python, projects=multi)
         except MLTreeError as exc:
             print(f"mltree-mcp: {exc}", file=sys.stderr)
             raise SystemExit(2)

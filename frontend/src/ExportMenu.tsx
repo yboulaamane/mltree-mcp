@@ -1,3 +1,4 @@
+import { apiUrl } from "./api";
 import { useEffect, useRef, useState } from "react";
 import { isOffline } from "./offline";
 
@@ -82,7 +83,7 @@ export default function ExportMenu({ project, onMap, goMap }: { project: string;
     }
   };
   const html = (scripts: boolean) => {
-    download(`/api/export?scripts=${scripts ? 1 : 0}`, `${slug(project)}-mltree.html`);
+    download(apiUrl(`/api/export?scripts=${scripts ? 1 : 0}`), `${slug(project)}-mltree.html`);
     setOpen(false);
   };
 

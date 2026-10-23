@@ -7,6 +7,10 @@ export class ApiError extends Error {
   }
 }
 
+/** Multi-project viewer: this page lives under /p/<slug>/ and its API under /p/<slug>/api/. */
+export const BASE = typeof location !== "undefined" ? (location.pathname.match(/^\/p\/[^/]+/)?.[0] ?? "") : "";
+export const apiUrl = (path: string) => (path.startsWith("/api") ? BASE + path : path);
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const offline = offlineData();
   if (offline) {
@@ -16,7 +20,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       throw new ApiError((e as { status?: number }).status ?? 400, (e as Error).message);
     }
   }
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     ...init,
     // X-MLTree marks requests from this app; the server requires it for anything that runs code
     headers: { "Content-Type": "application/json", "X-MLTree": "1", ...(init?.headers ?? {}) },
@@ -48,7 +52,7 @@ export function useRevision(): { revision: number; live: boolean } {
       poll();
       return () => window.clearInterval(timer);
     }
-    const es = new EventSource("/api/events");
+    const es = new EventSource(apiUrl("/api/events"));
     es.addEventListener("revision", (e) => {
       setRevision(JSON.parse((e as MessageEvent).data).revision);
       setLive(true);

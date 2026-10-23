@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, useApi, useRevision } from "./api";
+import { api, BASE, useApi, useRevision } from "./api";
 import type { Pipeline } from "./types";
 import RunDialog from "./RunDialog";
 import LogPanel from "./LogPanel";
@@ -9,6 +9,7 @@ import TreeView from "./TreeView";
 import CompareView from "./CompareView";
 import ExportMenu from "./ExportMenu";
 import { offlineData } from "./offline";
+import { ProjectSwitcher } from "./ProjectSwitcher";
 
 type View = "map" | "tree" | "compare";
 export type Theme = "light" | "dark";
@@ -103,7 +104,11 @@ export default function App() {
             </svg>
           </span>
           <strong>mltree</strong>
-          <span className="project" title={pipeline?.root}>{pipeline?.project ?? "…"}</span>
+          {BASE && !snapshot ? (
+            <ProjectSwitcher current={pipeline?.project ?? "…"} root={pipeline?.root} />
+          ) : (
+            <span className="project" title={pipeline?.root}>{pipeline?.project ?? "…"}</span>
+          )}
         </div>
         <nav className="tabs">
           {(["map", "tree", "compare"] as View[]).map((v) => (

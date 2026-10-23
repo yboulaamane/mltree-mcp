@@ -4,21 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mltree-mcp"
-version = "0.7.0"
+version = "0.8.0"
 description = "An MCP server that maps your ML / GNN workflow as a node graph and records every experiment as a branching tree, while Codex or Claude Code works."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yassir Boulaamane" }]
-keywords = ["mcp", "machine-learning", "gnn", "experiment-tracking", "claude-code", "codex", "pipeline"]
+keywords = ["mcp", "model-context-protocol", "machine-learning", "gnn", "graph-neural-networks", "qsar",
+            "experiment-tracking", "claude-code", "codex", "pipeline", "pytorch-geometric"]
 classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Monitoring",
+  "Typing :: Typed",
 ]
 dependencies = [
   # Works with the 1.x SDK (FastMCP) and the 2.x SDK (MCPServer).
@@ -30,7 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4", "httpx>=0.27"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "anyio>=4", "httpx>=0.27", "build>=1.2", "twine>=5"]
 screenshots = ["playwright>=1.40"]
 
 [project.scripts]
@@ -38,13 +49,18 @@ mltree-mcp = "mltree_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/yboulaamane/mltree-mcp"
+Repository = "https://github.com/yboulaamane/mltree-mcp"
+Issues = "https://github.com/yboulaamane/mltree-mcp/issues"
+Changelog = "https://github.com/yboulaamane/mltree-mcp#changelog"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mltree_mcp"]
 artifacts = ["src/mltree_mcp/static/**"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["frontend/node_modules", "docs/*.png"]
+include = ["src/mltree_mcp", "tests", "examples", "frontend/src", "frontend/*.json", "frontend/*.ts", "frontend/index.html",
+           "scripts", "README.md", "LICENSE", "pyproject.toml"]
+exclude = ["frontend/node_modules", "**/__pycache__", "examples/**/.mltree", "examples/**/data/processed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

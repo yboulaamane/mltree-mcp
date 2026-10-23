@@ -392,6 +392,78 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
     return app
 
 
+def create_multi_app(projects: list[str | dict[str, str]], poll_interval: float = 1.0, allow_run: bool = False,
+                     python: str | None = None) -> Starlette:
+    """One viewer for several projects: each is served under ``/p/<slug>/`` (its own API, runs and live stream),
+    ``/api/projects`` lists them for the switcher, and ``/`` opens the first one."""
+    from starlette.responses import RedirectResponse
+
+    from .projects import resolve_projects
+
+    items = resolve_projects(projects)
+    apps = {it["slug"]: create_app(it["root"], poll_interval=poll_interval, allow_run=allow_run, python=python)
+            for it in items}
+
+    def listing() -> list[dict[str, Any]]:
+        out = []
+        for it in items:
+            st = Store(it["root"])
+            init = st.is_initialized()
+            entry = {"slug": it["slug"], "name": st.project_name() if init and not it.get("named") else it["name"], "root": str(it["root"]),
+                     "initialized": init, "url": f"/p/{it['slug']}/"}
+            if init:
+                try:
+                    p = st.get_pipeline()
+                    entry["steps"] = len(p["nodes"])
+                    entry["runs"] = sum(n.get("run_count") or 0 for n in p["nodes"])
+                except Exception:  # noqa: BLE001 - a broken project must not break the switcher
+                    entry["error"] = "could not read the store"
+            out.append(entry)
+        return out
+
+    async def list_projects(_: Request) -> Response:
+        return JSONResponse({"projects": await asyncio.to_thread(listing)})
+
+    async def health(_: Request) -> Response:
+        return JSONResponse({"ok": True, "multi": True, "allow_run": allow_run,
+                             "projects": [{"slug": i["slug"], "root": str(i["root"])} for i in items]})
+
+    async def home(_: Request) -> Response:
+        return RedirectResponse(f"/p/{items[0]['slug']}/", status_code=307)
+
+    async def no_slash(request: Request) -> Response:
+        slug = request.path_params["slug"]
+        if slug not in apps:
+            return JSONResponse({"error": f"Unknown project {slug!r}. Known: {', '.join(apps)}"}, status_code=404)
+        return RedirectResponse(f"/p/{slug}/", status_code=307)
+
+    routes: list[Any] = [
+        Route("/api/projects", list_projects),
+        Route("/api/health", health),
+        Route("/api/{rest:path}", lambda r: JSONResponse({"error": "Not found (open a project under /p/<name>/)"},
+                                                         status_code=404)),
+        Route("/", home),
+        Route("/p/{slug}", no_slash),
+    ]
+    if (STATIC_DIR / "assets").is_dir():
+        routes.append(Mount("/assets", app=StaticFiles(directory=STATIC_DIR / "assets"), name="assets"))
+    routes += [Mount(f"/p/{slug}", app=sub) for slug, sub in apps.items()]
+    routes.append(Route("/p/{slug}/{rest:path}", no_slash))
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:  # mounted apps' own lifespans don't run: stop every project's runs here
+            for sub in apps.values():
+                sub.state.manager.shutdown()
+
+    app = Starlette(routes=routes, middleware=[Middleware(GZipMiddleware, minimum_size=1024)], lifespan=lifespan)
+    app.state.projects = items
+    app.state.apps = apps
+    return app
+
+
 def view_url(host: str | None = None, port: int | None = None) -> str:
     import os
 
@@ -402,14 +474,22 @@ def view_url(host: str | None = None, port: int | None = None) -> str:
 
 
 def serve(project: str | Path | None = None, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-          allow_run: bool = False, python: str | None = None) -> None:
+          allow_run: bool = False, python: str | None = None,
+          projects: list[str | dict[str, str]] | None = None) -> None:
     import uvicorn
 
     if allow_run and host not in LOOPBACK:
         raise MLTreeError(f"--allow-run only binds to 127.0.0.1 (got --host {host}). On a server, keep the default "
                           "host and open an SSH tunnel: ssh -L 8765:localhost:8765 user@server")
-    app = create_app(project, allow_run=allow_run, python=python)
-    print(f"mltree viewer for {app.state.root} -> {view_url(host, port)}  (Ctrl+C to stop)", flush=True)
+    if projects:
+        app = create_multi_app(projects, allow_run=allow_run, python=python)
+        print(f"mltree viewer for {len(app.state.projects)} projects -> {view_url(host, port)}  (Ctrl+C to stop)",
+              flush=True)
+        for it in app.state.projects:
+            print(f"  {view_url(host, port)}/p/{it['slug']}/  {it['root']}", flush=True)
+    else:
+        app = create_app(project, allow_run=allow_run, python=python)
+        print(f"mltree viewer for {app.state.root} -> {view_url(host, port)}  (Ctrl+C to stop)", flush=True)
     if allow_run:
         print("Running steps is ENABLED (--allow-run): the Run buttons execute the project's scripts on this machine.",
               flush=True)

@@ -1,5 +1,10 @@
 # mltree-mcp
 
+[![test](https://github.com/yboulaamane/mltree-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/yboulaamane/mltree-mcp/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/mltree-mcp)](https://pypi.org/project/mltree-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/mltree-mcp)](https://pypi.org/project/mltree-mcp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/yboulaamane/mltree-mcp/blob/main/LICENSE)
+
 **Your ML workflow as a node map, your experiments as a tree — filled in by your coding assistant as it works.**
 
 `mltree-mcp` is an [MCP](https://modelcontextprotocol.io) server for Codex, Claude Code and any other MCP client.
@@ -11,13 +16,15 @@ While the assistant writes and runs your ML / QSAR / GNN code, it calls `mltree`
 
 Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp view` opens a KNIME-style map of it in your browser.
 
-![Workflow map](docs/screenshot-map.png)
+![Demo: workflow map, experiment tree, compare, project switcher](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/demo.gif)
 
-![Experiment tree](docs/screenshot-tree.png)
+![Workflow map](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-map.png)
 
-> Status: **0.6.0**. MCP core, map viewer, `scan_project` for existing projects, shareable HTML export, running steps
-> and grid sweeps from the map (opt-in), and now **data versions** and a **compare view with param changes, metric
-> curves and code diffs** (see [Data versions](#data-versions) and [Compare](#compare-param-changes-curves-and-code-diff)).
+![Experiment tree](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-tree.png)
+
+> Status: **0.8.0**. MCP core, map viewer, `scan_project` for existing projects, shareable HTML export, running steps
+> and grid sweeps from the map (opt-in), data versions, compare with param changes / curves / code diffs, notes and
+> tags, GNN views, and now **PyPI packaging, CI and a [multi-project viewer](#several-projects-in-one-viewer)**.
 > See the [changelog](#changelog).
 
 ## Install
@@ -25,18 +32,22 @@ Everything lives as plain files in your repo under `.mltree/`, and `mltree-mcp v
 Requires Python 3.11+. Works with the MCP Python SDK 1.x (`FastMCP`) and 2.x (`MCPServer`).
 
 ```bash
-# from a clone (until it is published on PyPI)
+pip install mltree-mcp      # or: uv tool install mltree-mcp
+mltree-mcp --version
+
+# or run it without installing
+uvx mltree-mcp --version
+```
+
+The wheel ships the prebuilt viewer, so Node is not needed. From source:
+
+```bash
 git clone https://github.com/yboulaamane/mltree-mcp
 cd mltree-mcp
 pip install -e .            # or: uv pip install -e ".[dev]"
-mltree-mcp --version
 
-# run without installing, straight from the folder or the git repo
-uvx --from /path/to/mltree-mcp mltree-mcp --version
+# straight from the git repo
 uvx --from git+https://github.com/yboulaamane/mltree-mcp mltree-mcp --version
-
-# once published on PyPI
-uvx mltree-mcp
 ```
 
 The `mltree-mcp` command starts a **stdio** MCP server (that is what Claude Code and Codex expect). Clients launch it for you; you don't run it by hand.
@@ -175,7 +186,7 @@ Or ask the assistant: it calls `open_map`, which starts the viewer in the backgr
 
 The built frontend ships inside the Python package (`src/mltree_mcp/static/`), so `pip install` needs no Node. Monaco is bundled too, with no CDN, so it works offline and on air-gapped clusters.
 
-![Compare runs](docs/screenshot-compare.png)
+![Compare runs](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-compare.png)
 
 ### Data versions
 
@@ -193,7 +204,7 @@ re-read. Files over 4 GiB and folders over 5000 files get a quick digest (size +
 - Compare has a *Data versions* row group, and the `data_status(step?)` tool gives the assistant the same view.
 - Only paths are hashed, never executed or parsed. Paths outside the project are shown by name only in the export.
 
-![Data versions in the step panel](docs/screenshot-data.png)
+![Data versions in the step panel](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-data.png)
 
 ### Compare: param changes, curves and code diff
 
@@ -206,9 +217,9 @@ Tick 2 or more runs (or use the Runs table's **Compare**):
 - **Code diff** of two runs' script snapshots, unified or side by side, hunks or the whole file. It is computed in
   the browser, so it also works in the HTML export.
 
-![Metric curves](docs/screenshot-curves.png)
+![Metric curves](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-curves.png)
 
-![Side-by-side code diff](docs/screenshot-diff.png)
+![Side-by-side code diff](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-diff.png)
 
 ### Notes and tags
 
@@ -221,7 +232,7 @@ use. Notes and tags are in the HTML export (read-only there).
 Editing notes doesn't need `--allow-run`, but the same request checks apply as for runs: an `X-MLTree: 1` header,
 a loopback `Host` and, if present, a loopback `Origin`.
 
-![Notes and tags in the experiment tree](docs/screenshot-notes.png)
+![Notes and tags in the experiment tree](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-notes.png)
 
 ### GNN views
 
@@ -251,9 +262,9 @@ mltree-mcp gnn --project . --step featurize --introspect --python ~/envs/pyg/bin
 Broken or unusual scripts never break the map; the section just shows less. The export keeps the summaries and
 cached stats (not the source fragments when scripts are left out) and never offers introspection.
 
-![GNN architecture summary](docs/screenshot-gnn.png)
+![GNN architecture summary](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-gnn.png)
 
-![Dataset stats](docs/screenshot-gnn-data.png)
+![Dataset stats](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-gnn-data.png)
 
 ### On a remote server or HPC cluster
 
@@ -272,6 +283,34 @@ Use `--host 0.0.0.0` only on a network you trust. The viewer has no authenticati
 writes are node positions and notes/tags, and notes/tags are refused unless the request comes through a loopback
 `Host` (an SSH tunnel). `--allow-run` refuses any bind other than `127.0.0.1`, so run steps through the SSH tunnel.
 
+### Several projects in one viewer
+
+One viewer can serve several projects, with a switcher in the header. Each project gets its own URL prefix
+(`/p/<slug>/`), API, live stream and run manager, so tabs on different projects work side by side.
+
+```bash
+mltree-mcp view --projects ~/projects/qsar-egfr ~/projects/tox21-gnn
+
+# or register them once (stored in ~/.mltree/projects.json, or $MLTREE_HOME/projects.json)
+mltree-mcp projects add ~/projects/qsar-egfr --name "QSAR EGFR"
+mltree-mcp projects add ~/projects/tox21-gnn
+mltree-mcp projects list
+mltree-mcp projects remove tox21-gnn      # by folder or by name
+mltree-mcp view --projects                # serves everything in the registry
+```
+
+`http://localhost:8765/` redirects to the first project, `GET /api/projects` lists them all (name, steps, runs), and
+every route in the [HTTP API](#http-api) is available under `/p/<slug>/`. `--allow-run` and the edit guards apply
+per project exactly as in single-project mode. When the assistant calls `open_map` and a multi-project viewer is
+already running on the port, it links to that project's page (or warns if the project isn't in the viewer).
+The registry file is plain JSON:
+
+```json
+{"projects": [{"path": "/home/you/projects/qsar-egfr", "name": "QSAR EGFR"}, {"path": "/home/you/projects/tox21-gnn"}]}
+```
+
+![Project switcher](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-projects.png)
+
 ## Run steps from the map
 
 Start the viewer with `--allow-run` and each node gets a **▶** button, and the step panel gets **▶ Run…** and **Grid sweep…**:
@@ -281,7 +320,7 @@ mltree-mcp view --project ~/projects/qsar-gnn --allow-run           # Python: se
 mltree-mcp view --project ~/projects/qsar-gnn --allow-run --python ~/miniconda3/envs/gnn/bin/python
 ```
 
-![Run dialog](docs/screenshot-run-dialog.png)
+![Run dialog](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-run-dialog.png)
 
 - **Run dialog.** The params are prefilled from the step's last run, or from its scanned / declared params. You can
   edit them, add extra CLI arguments and see the exact command before you launch. A checkbox confirms that you know it
@@ -293,7 +332,7 @@ mltree-mcp view --project ~/projects/qsar-gnn --allow-run --python ~/miniconda3/
   the run failed, and its last stderr lines go into the notes. A run branches in the experiment tree from the newest
   succeeded run of an upstream step, so `evaluate` hangs under the `train` run that made its model.
 
-![Live log panel](docs/screenshot-run-log.png)
+![Live log panel](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-run-log.png)
 
 **How params reach your script.** mltree reads the script (it doesn't run it) to choose a style:
 
@@ -338,13 +377,13 @@ is better. It shows how many runs the grid makes (64 at most by default) and the
 children of a **sweep** run. The log panel shows the progress, a child table with the best one starred, and each
 child's log. **Cancel** stops the current child and skips the rest.
 
-![Sweep progress](docs/screenshot-sweep-log.png)
+![Sweep progress](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-sweep-log.png)
 
 In the experiment tree a sweep is one card: its label, the number of runs, ✓/✗ counts and the best value. The children
 fan out below it with the best child highlighted (★ sweep best). Sweeps with more than 8 children start **folded to
 the best one**. **▸ unfold** shows them all.
 
-![Sweep fan in the experiment tree](docs/screenshot-sweep-tree.png)
+![Sweep fan in the experiment tree](https://raw.githubusercontent.com/yboulaamane/mltree-mcp/main/docs/screenshot-sweep-tree.png)
 
 Sweeps also come from:
 - **`scan_project`**: an Optuna study becomes a sweep with its trials as children, ranked by the study's direction. A
@@ -403,6 +442,9 @@ shell. Set `MLTREE_ALLOW_RUN=0` in the server's environment to turn them off, fo
 | `GET /api/steps/{step}/gnn` | static model summary, dataset candidates, cached stats |
 | `POST /api/steps/{step}/gnn/introspect` | load the step's graph file(s) in a subprocess and cache stats (needs `--allow-run`) |
 
+With `view --projects`, every route above lives under `/p/<slug>/` and the root has `GET /api/projects` (slug, name,
+root, url, steps, runs) and `GET /api/health` (`multi: true`, the project roots).
+
 The `POST` and `PUT` routes need the `X-MLTree: 1` header (see [Safety model](#safety-model)).
 
 ## Share the map
@@ -414,7 +456,7 @@ The `POST` and `PUT` routes need the `X-MLTree: 1` header (see [Safety model](#s
   panel with each script (current file and the snapshot stored with every run), the experiment tree and the compare
   view. It inlines a lighter build of the viewer: a small highlighted code view instead of Monaco and SVG bar
   charts instead of Plotly. The bundled demo exports to about **530 KB**: ~500 KB of app and the rest data, with
-  scripts deduplicated by SHA-256. [`docs/example-export.html`](docs/example-export.html) is a sample.
+  scripts deduplicated by SHA-256. [`docs/example-export.html`](https://github.com/yboulaamane/mltree-mcp/blob/main/docs/example-export.html) is a sample.
 - **Shareable HTML without scripts**: the same file with the code left out.
 - **Map as PNG / SVG**: an image of the current map view (pan and zoom first), for slides and papers.
 
@@ -561,6 +603,9 @@ The tests cover:
 - every viewer API route, the SPA fallback, the live event stream and `open_map`
 - the runner (CLI detection, param passing, metric parsing, logs, cancel, grid sweeps, schema migration) and the
   run safety guard (403 without `--allow-run`, without `X-MLTree`, with a foreign `Origin` or `Host`)
+- data versions, compare/diffs, notes/tags, GNN summaries (static and introspected) and the HTML export (with a
+  headless-Chrome render check when Playwright is installed)
+- the multi-project registry, `/p/<slug>/` routing, the `projects` CLI and `open_map` against a multi-project viewer
 
 Frontend (React + TypeScript + Vite + React Flow + Monaco + Plotly) lives in `frontend/`:
 
@@ -570,7 +615,11 @@ npm run dev          # http://localhost:5173, proxies /api to a running `mltree-
 npm run build        # type-checks and writes the bundle into src/mltree_mcp/static/ (commit it)
 ```
 
-Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts); for the data-version / curves / diff screenshots run `python scripts/screenshots_data.py --project <copy>` the same way; for the notes / GNN screenshots start it with `--allow-run --python <python with torch_geometric>` and run `python scripts/screenshots_gnn.py`. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
+CI (`.github/workflows/test.yml`) runs pytest on Python 3.11–3.13 (plus macOS and the 1.x MCP SDK), checks that the
+committed `static/` bundle matches `npm run build`, and builds the sdist and wheel, runs `twine check` and installs
+the wheel in a clean venv.
+
+Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts); for the data-version / curves / diff screenshots run `python scripts/screenshots_data.py --project <copy>` the same way; for the notes / GNN screenshots start it with `--allow-run --python <python with torch_geometric>` and run `python scripts/screenshots_gnn.py`; for the project switcher and `docs/demo.gif`, register two copies of the demo, start `view --projects` and run `python scripts/screenshots_projects.py` (needs ffmpeg). If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
 
 ## Roadmap
 
@@ -580,9 +629,35 @@ Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, s
 4. **Run steps and sweeps** ✅ (0.5.0: Run button, live logs, auto-recorded runs, grid sweeps, sweep fans, `run_step`)
 5. **Data versioning and compare** ✅ (0.6.0: input/output hashes per run, changed-input flags, param changes, code diff, metric curves)
 6. **Notes, tags and GNN views** ✅ (0.7.0: editable notes/tags, static architecture summary, opt-in dataset stats)
-7. PyPI release, CI, multi-project viewer (0.8.0)
+7. **PyPI packaging, CI, multi-project viewer** ✅ (0.8.0)
+
+## Releasing
+
+Releases go to PyPI from `.github/workflows/release.yml` with [trusted publishing](https://docs.pypi.org/trusted-publishers/)
+(no API token). One-time setup:
+
+1. On PyPI, under *Your projects → Publishing → Add a new pending publisher*, enter: project `mltree-mcp`, owner
+   `yboulaamane`, repository `mltree-mcp`, workflow `release.yml`, environment `pypi`. (Optional: the same on
+   TestPyPI with environment `testpypi`.)
+2. On GitHub, *Settings → Environments*: create `pypi` (and `testpypi`); adding yourself as a required reviewer
+   makes every upload wait for your click.
+
+To release: bump `version` in `pyproject.toml`, `src/mltree_mcp/__init__.py` and `frontend/package.json`, rebuild the
+frontend, commit, then publish a GitHub release with tag `vX.Y.Z` (`gh release create v0.8.0 --generate-notes`).
+The workflow checks the tag matches the version, builds, runs `twine check` and uploads. *Actions → release → Run
+workflow* uploads to TestPyPI instead. Locally: `python -m build && twine check --strict dist/*`.
 
 ## Changelog
+
+**0.8.0**
+- Multi-project viewer: `mltree-mcp view --projects DIR ...` or a registry (`~/.mltree/projects.json`, managed with
+  `mltree-mcp projects add|list|remove`); each project under `/p/<slug>/`, a project switcher in the header,
+  `GET /api/projects`; `open_map` links into a running multi-project viewer.
+- PyPI-ready packaging: classifiers, project URLs, `py.typed`, a lean sdist; the wheel ships the viewer and export
+  bundles. `python -m build` + `twine check --strict` pass.
+- CI: GitHub Actions test matrix (3.11–3.13, macOS, MCP SDK 1.x), frontend bundle freshness check, wheel smoke test;
+  release workflow with PyPI trusted publishing.
+- README: demo GIF, badges, refreshed screenshots.
 
 **0.7.0**
 - Notes on steps and runs and tags on runs, editable in the viewer (loopback + `X-MLTree` only), shown on nodes,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, useApi } from "./api";
+import { api, apiUrl, useApi } from "./api";
 import type { LogLine, Run } from "./types";
 import type { Watch } from "./runctx";
 import { STATUS_LABEL, fmtNum, fmtVal, shortId } from "./util";
@@ -27,7 +27,7 @@ function useRunLog(runId: string | null) {
     let closed = false;
     let retry: number | undefined;
     const open = () => {
-      es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/log/stream?offset=${next}`);
+      es = new EventSource(apiUrl(`/api/runs/${encodeURIComponent(runId)}/log/stream?offset=${next}`));
       es.onopen = () => setConnected(true);
       es.addEventListener("lines", (e) => {
         const d = JSON.parse((e as MessageEvent).data) as { lines: LogLine[]; next: number };

@@ -254,3 +254,8 @@ table.diff .sign { display: inline-block; width: 14px; color: var(--muted); }
 .gnn-flow { font-size: 12px; line-height: 1.8; }
 .gnn-flow .arrow { color: var(--muted); }
 .step-node.has-gnn { height: 112px; }
+
+/* 0.8.0: multi-project switcher */
+select.project-switch { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--fg);
+  padding: 3px 6px; margin-left: 8px; font: inherit; max-width: 340px; cursor: pointer; }
+select.project-switch:hover { border-color: var(--accent); }
