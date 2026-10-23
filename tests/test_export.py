@@ -210,3 +210,19 @@ def test_snapshot_has_histories_and_data_versions(demo):
     # a fingerprint outside the project keeps only the file name
     run = {"id": "x", "data": {"inputs": {"/abs/where/big.h5": {"path": "/abs/where/big.h5", "version": "abc"}}}}
     assert export_mod._portable(demo, run)["data"]["inputs"]["/abs/where/big.h5"]["path"] == "big.h5"
+
+
+def test_snapshot_has_notes_tags_and_gnn(demo):
+    rid = demo.list_runs(step="train", limit=1)[0]["id"]
+    demo.set_step_notes("train", "lr sweep pending")
+    demo.tag_run(rid, add=["baseline"])
+    demo.add_note("best so far", run_id=rid)
+    snap = build_snapshot(demo)
+    train = next(n for n in snap["pipeline"]["nodes"] if n["name"] == "train")
+    assert train["notes"] == "lr sweep pending" and "baseline" in snap["pipeline"]["tags"]
+    run = next(r for r in snap["runs"] if r["id"] == rid)
+    assert "baseline" in run["tags"] and "best so far" in run["notes"]
+    g = snap["gnn"]["train"]
+    assert g["models"] and g["can_introspect"] is False and "call" in json.dumps(g)
+    bare = build_snapshot(demo, include_scripts=False)["gnn"]
+    assert bare["train"]["models"] and '"call"' not in json.dumps(bare)

@@ -13,6 +13,8 @@ import type { Theme } from "./App";
 
 const W = 220;
 const H = 92;
+const HG = 112; // with the GNN chip
+const hOf = (s: StepNode) => (s.gnn ? HG : H);
 
 type StepData = { step: StepNode };
 type StepFlowNode = Node<StepData, "step">;
@@ -23,11 +25,12 @@ function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
   const runs = useRuns();
   const canRun = runs.mode !== "none" && runnable(s.script_path, s.script_exists);
   return (
-    <div className={`step-node status-${s.status}${selected ? " selected" : ""}`}>
+    <div className={`step-node status-${s.status}${selected ? " selected" : ""}${s.gnn ? " has-gnn" : ""}`}>
       <Handle type="target" position={Position.Left} />
       <div className="step-head">
         <span className="dot" />
         <span className="step-name">{s.name}</span>
+        {s.notes && <span className="note-dot" title={s.notes.length > 300 ? `${s.notes.slice(0, 300)}…` : s.notes}>✎</span>}
         <span className="pill">{STATUS_LABEL[s.status]}</span>
         {canRun && (
           <button className="run-btn nodrag" disabled={runs.mode !== "on" || s.status === "running"}
@@ -36,6 +39,12 @@ function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
         )}
       </div>
       <div className="step-desc">{s.description || s.script_path || "no script"}</div>
+      {s.gnn && (
+        <div className="gnn-chip" title={[s.gnn.model && `model ${s.gnn.model}`, s.gnn.datasets?.length && `datasets: ${s.gnn.datasets.join(", ")}`,
+          s.gnn.graphs && `${s.gnn.graphs} graphs inspected`].filter(Boolean).join("\n")}>
+          <span className="gnn-icon">⬡</span>{s.gnn.label ?? s.gnn.datasets?.join(", ") ?? ""}{s.gnn.graphs ? `${s.gnn.label || s.gnn.datasets ? " · " : ""}${s.gnn.graphs} graphs` : ""}
+        </div>
+      )}
       <div className="step-foot">
         <span>{s.run_count} run{s.run_count === 1 ? "" : "s"}</span>
         {s.data?.changed_inputs.length ? (
@@ -52,7 +61,7 @@ function StepCard({ data, selected }: NodeProps<StepFlowNode>) {
 const nodeTypes = { step: StepCard };
 
 function layoutAll(p: Pipeline) {
-  return dagreLayout(p.nodes.map((n) => ({ id: n.name, width: W, height: H })), p.edges, "LR");
+  return dagreLayout(p.nodes.map((n) => ({ id: n.name, width: W, height: hOf(n) })), p.edges, "LR");
 }
 
 function Inner(props: {
@@ -73,7 +82,7 @@ function Inner(props: {
       return pipeline.nodes.map((s) => {
         const old = local.get(s.name);
         const position = old?.position ?? s.position ?? auto[s.name] ?? { x: 0, y: 0 };
-        return { id: s.name, type: "step", position, data: { step: s }, selected: s.name === active, width: W, height: H };
+        return { id: s.name, type: "step", position, data: { step: s }, selected: s.name === active, width: W, height: hOf(s) };
       });
     });
   }, [pipeline, setNodes, active]);

@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 P = "data/processed/"
 STEPS = [
     ("load_smiles", "steps/load_smiles.py", ["data/molecules.csv"], [P + "molecules.json"], {}, "Load SMILES + target from data/molecules.csv"),
-    ("featurize", "steps/featurize.py", [P + "molecules.json"], [P + "graphs.json"], {"featurizer": "atom_one_hot"}, "SMILES -> molecular graphs"),
+    ("featurize", "steps/featurize.py", [P + "molecules.json"], [P + "graphs.json", P + "graphs.pt"], {"featurizer": "atom_one_hot"}, "SMILES -> molecular graphs"),
     ("split", "steps/split.py", [P + "graphs.json"], [P + "train.json", P + "test.json"], {"test_size": 0.2, "seed": 42}, "Random train/test split"),
     ("train", "steps/train.py", [P + "train.json"], [P + "model.json"], {"alpha": 1.0, "layers": 1}, "Toy GCN (mean aggregation + ridge)"),
     ("evaluate", "steps/evaluate.py", [P + "model.json", P + "test.json"], [P + "metrics.json"], {}, "Test RMSE / MAE / R2"),

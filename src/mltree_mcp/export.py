@@ -95,6 +95,27 @@ def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]
         data_status = _portable_paths(store.data_status(fresh=True))
     except (OSError, MLTreeError):
         data_status = None
+    gnn_views: dict[str, Any] = {}
+    from . import gnn
+
+    for node in pipeline["nodes"]:
+        try:
+            v = gnn.step_view(store, node["name"])
+        except (OSError, MLTreeError, SyntaxError, ValueError):
+            continue
+        if not (v["models"] or v["datasets"] or v["dataset_files"]):
+            continue
+        v["can_introspect"] = False
+        if not include_scripts:  # no source fragments when the scripts are left out
+            for m in v["models"]:
+                m.pop("call", None)
+                m.pop("instantiated", None)
+                for lay in m.get("layers", []):
+                    lay.pop("call", None)
+                    lay.pop("mlp", None)
+            for d in v["datasets"]:
+                d.pop("call", None)
+        gnn_views[node["name"]] = v
     # don't leak the absolute server path of the project into a file meant for sharing
     pipeline = {**pipeline, "root": pipeline["project"]}
     return {
@@ -110,6 +131,7 @@ def build_snapshot(store: Store, include_scripts: bool = True) -> dict[str, Any]
         "blobs": blobs,
         "histories": histories,
         "data_status": data_status,
+        "gnn": gnn_views,
     }
 
 

@@ -250,7 +250,7 @@ def test_gnn_demo_helper_io(tmp_path):
     assert {("load_smiles", "featurize"), ("featurize", "split"), ("split", "train"), ("split", "evaluate"),
             ("train", "evaluate")} <= _edges(s)
     assert _steps(s)["split"]["params"] == {"test_size": 0.2, "seed": 42}  # sys.argv fallbacks
-    assert [u["path"] for u in s["utilities"]] == ["steps/_common.py"]
+    assert [u["path"] for u in s["utilities"]] == ["steps/_common.py", "steps/gcn_model.py"]
 
 
 def test_grid_search_cv_results_become_a_sweep(tmp_path):

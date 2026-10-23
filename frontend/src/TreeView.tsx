@@ -8,6 +8,7 @@ import type { Run, SweepSummary, Tree } from "./types";
 import { dagreLayout } from "./layout";
 import { STATUS_LABEL, fmtNum, fmtTime, fmtVal, shortId } from "./util";
 import type { Theme } from "./App";
+import { NotesEditor, TagEditor } from "./Notes";
 
 const W = 190;
 const H = 78;
@@ -16,7 +17,7 @@ const SW = 236;
 const SH = 96;
 const AUTO_COLLAPSE = 8; // sweeps with more children start folded to their best child
 
-type RunData = { run: Run; metric: string | null; best: boolean; picked: boolean; sweepBest: boolean;
+type RunData = { run: Run; metric: string | null; best: boolean; picked: boolean; sweepBest: boolean; dim?: boolean;
   sweep?: SweepSummary; collapsed?: boolean; hidden?: number; toggle?: () => void };
 type RunFlowNode = Node<RunData, "run" | "sweep">;
 
@@ -27,7 +28,7 @@ function SweepCard({ data }: NodeProps<RunFlowNode>) {
   const c = sweep?.counts ?? {};
   const label = SOURCE_LABEL[run.sweep?.source ?? ""] ?? "sweep";
   return (
-    <div className={`run-node sweep-node status-${run.status}${picked ? " picked" : ""}`}>
+    <div className={`run-node sweep-node status-${run.status}${picked ? " picked" : ""}${data.dim ? " dim" : ""}`}>
       <Handle type="target" position={Position.Top} />
       <div className="run-head">
         <span className="dot" />
@@ -55,8 +56,9 @@ function SweepCard({ data }: NodeProps<RunFlowNode>) {
 function RunCard({ data }: NodeProps<RunFlowNode>) {
   const { run, metric, best, picked, sweepBest } = data;
   const v = metric ? run.metrics[metric] : undefined;
+  const tags = run.tags.filter((t) => t !== "mltree-run");
   return (
-    <div className={`run-node status-${run.status}${best ? " best" : ""}${sweepBest && !best ? " sweep-best" : ""}${picked ? " picked" : ""}`}>
+    <div className={`run-node status-${run.status}${best ? " best" : ""}${sweepBest && !best ? " sweep-best" : ""}${picked ? " picked" : ""}${data.dim ? " dim" : ""}`}>
       <Handle type="target" position={Position.Top} />
       <div className="run-head">
         <span className="dot" />
@@ -64,7 +66,8 @@ function RunCard({ data }: NodeProps<RunFlowNode>) {
         {best ? <span className="star" title="Best run">★ best</span>
           : sweepBest ? <span className="star soft" title="Best run of its sweep">☆ sweep best</span> : null}
       </div>
-      <div className="run-id mono">{shortId(run.id)}</div>
+      <div className="run-id mono">{shortId(run.id)}{run.notes && <span className="note-dot" title={run.notes}> ✎</span>}
+        {tags.slice(0, 2).map((t) => <span key={t} className="chip tag tiny">{t}</span>)}{tags.length > 2 && <span className="muted"> +{tags.length - 2}</span>}</div>
       <div className="run-metric">
         {metric ? (v !== undefined ? <>{metric} <b>{fmtNum(v)}</b></> : <span className="muted">no {metric}</span>)
           : <span className="muted">{STATUS_LABEL[run.status]}</span>}
@@ -83,13 +86,14 @@ function Inner(props: {
   const metric = props.params.get("metric") ?? "";
   const mode = (props.params.get("mode") ?? "max") as "min" | "max";
   const step = props.params.get("step") ?? "";
+  const tag = props.params.get("tag") ?? "";
   const q = new URLSearchParams({ ...(metric && { metric }), mode, ...(step && { step }) }).toString();
   const { data: tree, error } = useApi<Tree>(`/api/tree?${q}`, [props.revision]);
   const [focus, setFocus] = useState<string | null>(null);
   const [fold, setFold] = useState<Record<string, boolean>>({}); // sweep id -> collapsed (unset = auto)
   const flow = useReactFlow();
-  const set = (p: Partial<{ metric: string; mode: string; step: string }>) => {
-    const next = { metric, mode, step, ...p };
+  const set = (p: Partial<{ metric: string; mode: string; step: string; tag: string }>) => {
+    const next = { metric, mode, step, tag, ...p };
     props.setParams(Object.fromEntries(Object.entries(next).filter(([, v]) => v)) as Record<string, string>);
   };
 
@@ -132,7 +136,7 @@ function Inner(props: {
         id: r.id, type: sw ? "sweep" : "run", position: pos[r.id], width: sw ? SW : W, height: sw ? SH : H, draggable: false,
         data: {
           run: r, metric: tree.metric, best: r.id === tree.best_run_id, picked: props.selected.includes(r.id),
-          sweepBest: sweepBest.has(r.id), sweep: sweeps[r.id], collapsed: sw && isCollapsed(r.id), hidden: hiddenCount[r.id] ?? 0,
+          sweepBest: sweepBest.has(r.id), sweep: sweeps[r.id], dim: !!tag && !r.tags.includes(tag), collapsed: sw && isCollapsed(r.id), hidden: hiddenCount[r.id] ?? 0,
           toggle: () => setFold((f) => ({ ...f, [r.id]: !isCollapsed(r.id) })),
         },
       };
@@ -142,7 +146,12 @@ function Inner(props: {
       className: e.target === tree.best_run_id ? "flow-edge best" : sweeps[e.source] ? (sweepBest.has(e.target) ? "flow-edge sweep best-soft" : "flow-edge sweep") : "flow-edge",
     }));
     return { nodes, edges };
-  }, [tree, props.selected, fold]);
+  }, [tree, props.selected, fold, tag]);
+  const allTags = useMemo(() => {
+    const c: Record<string, number> = {};
+    tree?.runs.forEach((r) => r.tags.forEach((t) => { if (t !== "mltree-run") c[t] = (c[t] ?? 0) + 1; }));
+    return Object.entries(c).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  }, [tree]);
 
   useEffect(() => {
     const t = window.setTimeout(() => flow.fitView({ padding: 0.15 }), 50);
@@ -173,6 +182,15 @@ function Inner(props: {
               {props.steps.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </label>
+          {(allTags.length > 0 || tag) && (
+            <label>Tag
+              <select value={tag} onChange={(e) => set({ tag: e.target.value })} title="Dim runs without this tag">
+                <option value="">(any)</option>
+                {allTags.map(([t, n]) => <option key={t} value={t}>{t} ({n})</option>)}
+                {tag && !allTags.some(([t]) => t === tag) && <option value={tag}>{tag} (0)</option>}
+              </select>
+            </label>
+          )}
           {best && metric && (
             <span className="best-summary">★ best {metric}: <b>{fmtNum(tree!.best_value!)}</b> <span className="mono">{shortId(best.id)}</span></span>
           )}
@@ -218,8 +236,9 @@ function Inner(props: {
           <dl className="dl">{Object.entries(run.params).map(([k, v]) => <div key={k}><dt>{k}</dt><dd className="mono">{fmtVal(v)}</dd></div>)}
             {!Object.keys(run.params).length && <p className="muted">–</p>}</dl>
           {run.parent_run_id && <p><span className="muted">Parent</span> <a href="#" onClick={(e) => { e.preventDefault(); setFocus(run.parent_run_id); }} className="mono">{run.parent_run_id}</a></p>}
-          {run.tags.length > 0 && <p>{run.tags.map((t) => <span key={t} className="chip">{t}</span>)}</p>}
-          {run.notes && <p className="note">{run.notes}</p>}
+          <h3>Tags</h3>
+          <TagEditor tags={run.tags} runId={run.id} known={allTags.map(([t]) => t)} />
+          <NotesEditor notes={run.notes} path={`/api/runs/${encodeURIComponent(run.id)}/notes`} label="Run notes" />
           {run.artifacts.length > 0 && (<><h3>Artifacts</h3><ul className="arts">{run.artifacts.map((a) => <li key={a.path} className="mono">{a.path}</li>)}</ul></>)}
           <p className="muted small">Logged {fmtTime(run.created_at)}{run.git_commit ? ` · git ${run.git_commit.slice(0, 7)}` : ""}</p>
           <a href={`#/map?step=${encodeURIComponent(run.step)}`}>Open step on the map →</a>

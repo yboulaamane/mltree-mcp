@@ -210,6 +210,51 @@ Tick 2 or more runs (or use the Runs table's **Compare**):
 
 ![Side-by-side code diff](docs/screenshot-diff.png)
 
+### Notes and tags
+
+Click **+ Add note** / **Edit** in a step's panel or a run's panel to write free-text notes (Ctrl+Enter saves, Esc
+cancels). Runs also get **tags**: type one or more (comma-separated) in the run panel's tag box, × removes one. Notes
+show as ✎ on map nodes, tree cards and the runs table; the experiment tree's **Tag** filter dims every run without
+that tag. The assistant uses `add_note` and `tag_run`, and `get_pipeline` returns each step's notes and the tags in
+use. Notes and tags are in the HTML export (read-only there).
+
+Editing notes doesn't need `--allow-run`, but the same request checks apply as for runs: an `X-MLTree: 1` header,
+a loopback `Host` and, if present, a loopback `Origin`.
+
+![Notes and tags in the experiment tree](docs/screenshot-notes.png)
+
+### GNN views
+
+For graph-learning steps the step panel gets a **Graph model & data** section, and the node a chip like
+`GCNConv ×3 · hidden 64 · global_mean_pool` or `20 graphs`.
+
+- **Architecture summary (static).** mltree parses the step's script and the project modules it imports (it never
+  imports or runs them). For `torch.nn.Module` subclasses that use PyTorch Geometric or DGL layers it lists the layers
+  in `__init__` (type, library, in → out channels, heads, repeats from `for _ in range(num_layers)` /
+  `ModuleList` comprehensions), the readout / pooling and the order the layers are called in `forward`. Prebuilt
+  models (`GCN(in, hidden, num_layers)`, `GAT`, `GIN`, …) and literal / default / module-constant dimensions are
+  resolved; anything else is shown as the source text.
+- **Dataset stats (opt-in introspection).** The section lists dataset classes the script uses (`TUDataset`,
+  `MoleculeNet`, `DGLDataset`, …) and `.pt` / `.bin` graph files among the step's outputs. **Inspect dataset…** loads
+  the file in a separate Python process (`--python` / `$MLTREE_PYTHON` with torch installed) **without importing your
+  code**, and caches: number of graphs, nodes / edges min/mean/max, node and edge feature sizes, self loops,
+  isolated nodes, average degree, labels (classes and counts, or the regression range) and train/val/test masks. A
+  `state_dict` checkpoint gives tensor shapes and the parameter count. Stats are marked stale when the file changes.
+  This loads data with `torch.load` (which can run code embedded in a pickle if `weights_only=True` fails), so it needs
+  `view --allow-run`, `MLTREE_ALLOW_RUN` (MCP `gnn_summary(introspect=true)`) or the explicit CLI:
+
+```bash
+mltree-mcp gnn --project . --step featurize                  # static summary + cached stats (JSON)
+mltree-mcp gnn --project . --step featurize --introspect --python ~/envs/pyg/bin/python
+```
+
+Broken or unusual scripts never break the map; the section just shows less. The export keeps the summaries and
+cached stats (not the source fragments when scripts are left out) and never offers introspection.
+
+![GNN architecture summary](docs/screenshot-gnn.png)
+
+![Dataset stats](docs/screenshot-gnn-data.png)
+
 ### On a remote server or HPC cluster
 
 The viewer binds to `127.0.0.1` by default. Run it on the server and tunnel the port from your laptop:
@@ -223,8 +268,9 @@ ssh -L 8765:localhost:8765 you@server
 # open http://localhost:8765
 ```
 
-Use `--host 0.0.0.0` only on a network you trust. The viewer has no authentication; without `--allow-run`, position
-saving is its only write. `--allow-run` refuses any bind other than `127.0.0.1`, so run steps through the SSH tunnel.
+Use `--host 0.0.0.0` only on a network you trust. The viewer has no authentication; without `--allow-run` its only
+writes are node positions and notes/tags, and notes/tags are refused unless the request comes through a loopback
+`Host` (an SSH tunnel). `--allow-run` refuses any bind other than `127.0.0.1`, so run steps through the SSH tunnel.
 
 ## Run steps from the map
 
@@ -352,8 +398,12 @@ shell. Set `MLTREE_ALLOW_RUN=0` in the server's environment to turn them off, fo
 | `GET /api/runs/{run_id}/log/stream[?offset=]` | `text/event-stream` of `lines` events, then `end` |
 | `GET /api/runs/{run_id}/history` | step-wise metrics (`MLTREE_METRIC` lines or `log_run(history=)`) |
 | `GET /api/data[?step=]` | data versions of every step (or one): each input/output now vs the latest run, `changed_inputs` |
+| `PUT /api/steps/{step}/notes` / `PUT /api/runs/{run_id}/notes` | `{"notes": "..."}` (loopback + `X-MLTree`) |
+| `PUT /api/runs/{run_id}/tags` | `{"add": [..], "remove": [..]}` or `{"tags": [..]}` |
+| `GET /api/steps/{step}/gnn` | static model summary, dataset candidates, cached stats |
+| `POST /api/steps/{step}/gnn/introspect` | load the step's graph file(s) in a subprocess and cache stats (needs `--allow-run`) |
 
-The `POST` routes need the `X-MLTree: 1` header (see [Safety model](#safety-model)).
+The `POST` and `PUT` routes need the `X-MLTree: 1` header (see [Safety model](#safety-model)).
 
 ## Share the map
 
@@ -363,7 +413,7 @@ The `POST` routes need the `X-MLTree: 1` header (see [Safety model](#safety-mode
   double-click, with no server, no install and no network requests. It is read-only and includes the workflow map, the step
   panel with each script (current file and the snapshot stored with every run), the experiment tree and the compare
   view. It inlines a lighter build of the viewer: a small highlighted code view instead of Monaco and SVG bar
-  charts instead of Plotly. The bundled demo exports to about **450 KB**: ~415 KB of app and the rest data, with
+  charts instead of Plotly. The bundled demo exports to about **530 KB**: ~500 KB of app and the rest data, with
   scripts deduplicated by SHA-256. [`docs/example-export.html`](docs/example-export.html) is a sample.
 - **Shareable HTML without scripts**: the same file with the code left out.
 - **Map as PNG / SVG**: an image of the current map view (pan and zoom first), for slides and papers.
@@ -415,6 +465,9 @@ your machine with `scp you@server:/path/to/project/<project>-mltree.html .`
 | `data_status(step?)` | Data versions now vs each step's latest run: which inputs changed or are missing, so the assistant knows what to re-run. |
 | `compare_runs(run_ids, code_diff=True)` | Param changes, differing metrics and data versions of 2+ runs, and a unified diff of the first two runs' scripts. |
 | `list_runs(step?, status?, parent_run_id?, limit?)` | Runs, newest first. |
+| `add_note(text, step? \| run_id?, replace=False)` | Append to (or replace) the notes of a step or a run. |
+| `tag_run(run_id, add?, remove?, tags?)` | Add / remove tags on a run, or set the whole list. |
+| `gnn_summary(step?, introspect=False)` | GNN architecture summary (static) and dataset stats of one step or all; `introspect=true` loads the step's graph files in a subprocess (off with `MLTREE_ALLOW_RUN=0`). |
 | `best_run(metric, mode="max"\|"min", step?)` | Best **succeeded** run by a metric. |
 | `open_map(start=True, port?, allow_run=False)` | URL of the map viewer. It starts `mltree-mcp view` in the background if the viewer isn't running, and includes the `ssh -L` tip for remote servers. |
 
@@ -469,6 +522,7 @@ This repo tracks its ML workflow with the `mltree` MCP server. Keep the map up t
   call `compare_runs`.
 - To answer "which model was best?" use `best_run` (mode "min" for losses/RMSE, "max" for AUC/R²)
   and `list_runs`; don't guess from memory.
+- Record decisions with `add_note` (on the step or run) and label runs with `tag_run` ("baseline", "paper").
 - When the user wants to see the workflow, call `open_map` and give them the URL. When they want to send it to
   someone, call `export_map` (warn them that it includes the scripts unless `include_scripts=false`).
 ```
@@ -516,7 +570,7 @@ npm run dev          # http://localhost:5173, proxies /api to a running `mltree-
 npm run build        # type-checks and writes the bundle into src/mltree_mcp/static/ (commit it)
 ```
 
-Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts); for the data-version / curves / diff screenshots run `python scripts/screenshots_data.py --project <copy>` the same way. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
+Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, start the viewer on the demo, then `python scripts/screenshots.py`. For the run screenshots, start it on a fresh copy of the demo with `--allow-run` and run `python scripts/screenshots_run.py` (this really runs the demo scripts); for the data-version / curves / diff screenshots run `python scripts/screenshots_data.py --project <copy>` the same way; for the notes / GNN screenshots start it with `--allow-run --python <python with torch_geometric>` and run `python scripts/screenshots_gnn.py`. If you have a local Chrome, use `--chrome /usr/bin/google-chrome` instead of installing Playwright's browser.
 
 ## Roadmap
 
@@ -525,10 +579,19 @@ Screenshots: `pip install -e ".[screenshots]" && playwright install chromium`, s
 3. **`scan_project`** ✅ (static import of existing projects and their MLflow / Optuna / Lightning / wandb results)
 4. **Run steps and sweeps** ✅ (0.5.0: Run button, live logs, auto-recorded runs, grid sweeps, sweep fans, `run_step`)
 5. **Data versioning and compare** ✅ (0.6.0: input/output hashes per run, changed-input flags, param changes, code diff, metric curves)
-6. Notes and tags in the viewer; GNN views: dataset stats, static architecture summary (0.7.0)
+6. **Notes, tags and GNN views** ✅ (0.7.0: editable notes/tags, static architecture summary, opt-in dataset stats)
 7. PyPI release, CI, multi-project viewer (0.8.0)
 
 ## Changelog
+
+**0.7.0**
+- Notes on steps and runs and tags on runs, editable in the viewer (loopback + `X-MLTree` only), shown on nodes,
+  tree cards and the runs table, with a Tag filter in the experiment tree; MCP tools `add_note`, `tag_run`;
+  `get_pipeline` returns notes and tags; both are in the export.
+- GNN views: static `nn.Module` architecture summary for PyG / DGL models (layers, dims, repeats, pooling, forward
+  order) and opt-in dataset / checkpoint stats loaded in a subprocess; MCP tool `gnn_summary`, CLI `mltree-mcp gnn`,
+  `GET /api/steps/{step}/gnn`, `POST …/gnn/introspect`. The demo gets a PyG `MolGCN` model file.
+- Store schema v4 (step `notes`, `gnn_stats` cache).
 
 **0.6.0**
 - Data versions: inputs/outputs are fingerprinted (SHA-256, cached by size + mtime) and recorded with each run; the

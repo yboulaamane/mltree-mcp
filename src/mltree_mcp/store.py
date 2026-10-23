@@ -36,7 +36,7 @@ STORE_DIRNAME = ".mltree"
 DB_FILENAME = "mltree.db"
 PIPELINE_FILENAME = "pipeline.yaml"
 RUNS_DIRNAME = "runs"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 RUN_STATUSES = ("pending", "running", "succeeded", "failed", "cancelled")
 STEP_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
@@ -53,6 +53,12 @@ RUN_COLUMNS_V2 = [
     # schema v3 (0.6.0): data versions, {"inputs": {name: fingerprint}, "outputs": {...}}
     ("data", "TEXT"),
 ]
+# columns added to steps in schema v4 (0.7.0)
+STEP_COLUMNS_V4 = [
+    ("notes", "TEXT NOT NULL DEFAULT ''"),     # free-text notes about the step, editable in the viewer
+]
+MAX_NOTES_CHARS = 20_000
+MAX_TAG_CHARS = 64
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -122,6 +128,15 @@ CREATE TABLE IF NOT EXISTS file_hashes (     -- sha256 cache for data versioning
     sha256   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS gnn_stats (       -- graph-dataset stats from an explicit introspection (0.7.0)
+    path        TEXT PRIMARY KEY,             -- data file, relative to the project root
+    step        TEXT NOT NULL,
+    sha256      TEXT,                         -- file version the stats were computed from
+    stats       TEXT NOT NULL,                -- JSON
+    python      TEXT,
+    computed_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_step    ON runs(step, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_parent  ON runs(parent_run_id);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
@@ -179,6 +194,22 @@ def _check_str_list(value: Any, field: str) -> list[str]:
         if item.strip() not in out:
             out.append(item.strip())
     return out
+
+
+def _check_notes(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise MLTreeError("notes must be a string")
+    if len(value) > MAX_NOTES_CHARS:
+        raise MLTreeError(f"notes are limited to {MAX_NOTES_CHARS} characters (got {len(value)})")
+    return value.replace("\r\n", "\n")
+
+
+def _check_tag(tag: str) -> str:
+    if len(tag) > MAX_TAG_CHARS or any(ch in tag for ch in ",\n\r\t"):
+        raise MLTreeError(f"Invalid tag {tag!r}: up to {MAX_TAG_CHARS} characters, no commas, tabs or newlines")
+    return tag
 
 
 def _check_json_obj(value: Any, field: str) -> dict[str, Any]:
@@ -353,6 +384,10 @@ class Store:
             for col, decl in RUN_COLUMNS_V2:
                 if col not in have:  # migrate stores created by 0.4.x and older
                     c.execute(f"ALTER TABLE runs ADD COLUMN {col} {decl}")
+            have = {r["name"] for r in c.execute("PRAGMA table_info(steps)")}
+            for col, decl in STEP_COLUMNS_V4:
+                if col not in have:  # migrate stores created by 0.6.x and older
+                    c.execute(f"ALTER TABLE steps ADD COLUMN {col} {decl}")
             c.execute("CREATE INDEX IF NOT EXISTS idx_runs_sweep ON runs(sweep_id)")
             c.execute("UPDATE meta SET value=? WHERE key='schema_version' AND CAST(value AS INTEGER) < ?",
                       (str(SCHEMA_VERSION), SCHEMA_VERSION))
@@ -437,6 +472,7 @@ class Store:
             "outputs": _loads(r["outputs"], []),
             "params": _loads(r["params"], {}),
             "position": None if r["pos_x"] is None else {"x": r["pos_x"], "y": r["pos_y"]},
+            "notes": r["notes"] if "notes" in r.keys() else "",
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
         }
@@ -899,12 +935,28 @@ class Store:
                 "changed_outputs": d["changed_outputs"],
                 "versions": {x["name"]: x.get("version") for x in d["inputs"] + d["outputs"]},
             }
+        from . import gnn  # static only: parses the step scripts, never imports them
+
+        try:
+            cached = self.gnn_stats()
+        except sqlite3.Error:
+            cached = {}
+        for s in steps:
+            try:
+                s["gnn"] = gnn.badge(gnn.analyze_step(self, s))
+            except Exception:  # noqa: BLE001 - a summary must never break the map
+                s["gnn"] = None
+            graphs = sum(int(c["stats"].get("num_graphs") or 0) for c in cached.values()
+                         if c["step"] == s["name"] and isinstance(c.get("stats"), dict))
+            if graphs:
+                s["gnn"] = {**(s["gnn"] or {}), "graphs": graphs}
         return {
             "project": self.project_name(),
             "root": str(self.root),
             "nodes": steps,
             "edges": self.edges(),
             "order": self.topological_order(),
+            "tags": self.tags_in_use(),
         }
 
     def topological_order(self) -> list[str]:
@@ -942,6 +994,8 @@ class Store:
             d["inputs"] = _loads(r["inputs"], [])
             d["outputs"] = _loads(r["outputs"], [])
             d["params"] = _loads(r["params"], {})
+            if r["notes"]:
+                d["notes"] = r["notes"]
             steps[r["name"]] = d
         doc = {
             "version": SCHEMA_VERSION,
@@ -969,14 +1023,14 @@ class Store:
                 d = d or {}
                 name = _check_name(name)
                 c.execute(
-                    "INSERT OR IGNORE INTO steps(name, script_path, description, inputs, outputs, params, kind, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO steps(name, script_path, description, inputs, outputs, params, kind, notes, "
+                    "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         name, d.get("script"), d.get("description", "") or "",
                         json.dumps(_check_str_list(d.get("inputs"), "inputs")),
                         json.dumps(_check_str_list(d.get("outputs"), "outputs")),
                         json.dumps(_check_json_obj(d.get("params"), "params")),
-                        d.get("kind", "step"), now, now,
+                        d.get("kind", "step"), str(d.get("notes") or ""), now, now,
                     ),
                 )
             for e in doc.get("edges") or []:
@@ -1019,6 +1073,66 @@ class Store:
             c.executemany("UPDATE steps SET pos_x=?, pos_y=? WHERE name=?", clean)
             self._bump(c)
         return {"updated": [n for _, _, n in clean]}
+
+    # ------------------------------------------------------- notes and tags
+
+    def set_step_notes(self, step: str, notes: str) -> dict[str, Any]:
+        """Replace a step's notes (free text; '' clears them)."""
+        name = self.get_step(step)["name"]
+        notes = _check_notes(notes)
+        with self._conn() as c:
+            c.execute("UPDATE steps SET notes=?, updated_at=? WHERE name=?", (notes, utcnow(), name))
+            self._bump(c)
+        self._write_yaml()
+        return self.get_step(name)
+
+    def set_run_notes(self, run_id: str, notes: str) -> dict[str, Any]:
+        """Replace a run's notes ('' clears them)."""
+        return self.update_run(run_id, notes=_check_notes(notes))
+
+    def add_note(self, text: str, step: str | None = None, run_id: str | None = None,
+                 replace: bool = False) -> dict[str, Any]:
+        """Append ``text`` to the notes of a step or a run (exactly one of them), or replace them."""
+        if not isinstance(text, str) or (not text.strip() and not replace):
+            raise MLTreeError("text must be a non-empty string")
+        if bool(step) == bool(run_id):
+            raise MLTreeError("Give exactly one of step or run_id")
+        old = self.get_step(step)["notes"] if step else self.get_run(run_id)["notes"]  # type: ignore[arg-type]
+        new = text.strip() if replace or not old.strip() else old.rstrip() + "\n\n" + text.strip()
+        if step:
+            st = self.set_step_notes(step, new)
+            return {"target": "step", "step": st["name"], "notes": st["notes"]}
+        run = self.set_run_notes(run_id, new)  # type: ignore[arg-type]
+        return {"target": "run", "run_id": run["id"], "step": run["step"], "notes": run["notes"]}
+
+    def tag_run(self, run_id: str, add: list[str] | None = None, remove: list[str] | None = None,
+                tags: list[str] | None = None) -> dict[str, Any]:
+        """Add and/or remove tags on a run, or set the whole list with ``tags``. Order is kept, duplicates dropped."""
+        run = self.get_run(run_id)
+        if tags is not None:
+            new = [_check_tag(t) for t in _check_str_list(tags, "tags")]
+        else:
+            drop = set(_check_str_list(remove, "remove"))
+            new = [t for t in run["tags"] if t not in drop]
+            for t in _check_str_list(add, "add"):
+                t = _check_tag(t)
+                if t not in new:
+                    new.append(t)
+        if new != run["tags"]:
+            with self._conn() as c:
+                c.execute("UPDATE runs SET tags=? WHERE id=?", (json.dumps(new), run["id"]))
+                self._bump(c)
+            run = self.update_run(run["id"])  # rewrites run.json
+        return run
+
+    def tags_in_use(self) -> dict[str, int]:
+        """{tag: number of runs}, most used first."""
+        counts: dict[str, int] = {}
+        with self._conn() as c:
+            for r in c.execute("SELECT tags FROM runs"):
+                for t in _loads(r["tags"], []):
+                    counts[t] = counts.get(t, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
     def _snapshot_file(self, run_id: str) -> Path | None:
         d = self.runs_dir / run_id
@@ -1175,6 +1289,24 @@ class Store:
                 "size=excluded.size, mtime_ns=excluded.mtime_ns, sha256=excluded.sha256",
                 [(k, *v) for k, v in entries.items()],
             )
+
+    def gnn_stats(self) -> dict[str, dict[str, Any]]:
+        """Cached graph-dataset stats by data path (see mltree_mcp.gnn)."""
+        with self._conn() as c:
+            return {r["path"]: {"step": r["step"], "sha256": r["sha256"], "stats": _loads(r["stats"], {}),
+                                "python": r["python"], "computed_at": r["computed_at"]}
+                    for r in c.execute("SELECT * FROM gnn_stats")}
+
+    def put_gnn_stats(self, step: str, entries: dict[str, tuple[str | None, dict[str, Any]]], python: str) -> None:
+        now = utcnow()
+        with self._conn() as c:
+            c.executemany(
+                "INSERT INTO gnn_stats(path, step, sha256, stats, python, computed_at) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET step=excluded.step, sha256=excluded.sha256, stats=excluded.stats, "
+                "python=excluded.python, computed_at=excluded.computed_at",
+                [(path, step, sha, json.dumps(stats), python, now) for path, (sha, stats) in entries.items()],
+            )
+            self._bump(c)
 
     def steps_raw(self) -> list[dict[str, Any]]:
         self._require()

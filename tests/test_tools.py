@@ -39,7 +39,7 @@ async def call_err(name, args=None):
 
 async def test_tool_list():
     names = {t.name for t in await server.mcp.list_tools()}
-    assert names == {"init_project", "add_step", "connect_steps", "get_pipeline", "log_run", "list_runs", "best_run", "open_map", "scan_project", "export_map", "start_sweep", "finish_sweep", "run_step", "run_sweep", "run_log", "cancel_run", "data_status", "compare_runs"}
+    assert names == {"init_project", "add_step", "connect_steps", "get_pipeline", "log_run", "list_runs", "best_run", "open_map", "scan_project", "export_map", "start_sweep", "finish_sweep", "run_step", "run_sweep", "run_log", "cancel_run", "data_status", "compare_runs", "add_note", "tag_run", "gnn_summary"}
 
 
 async def test_tools_require_init(project):

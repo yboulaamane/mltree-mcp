@@ -5,7 +5,7 @@
  * present, api() answers the same /api/* routes as the Python viewer from the snapshot, so every view works
  * offline from file:// with no server.
  */
-import type { DataStatus, HistoryPoint, Pipeline, Run, Snapshot } from "./types";
+import type { DataStatus, GnnView, HistoryPoint, Pipeline, Run, Snapshot } from "./types";
 
 export interface ScriptRef {
   path: string;
@@ -26,6 +26,7 @@ export interface ExportSnapshot {
   blobs: Record<string, string>;
   histories?: Record<string, HistoryPoint[]>; // 0.6.0+
   data_status?: DataStatus | null;           // 0.6.0+
+  gnn?: Record<string, GnnView>;             // 0.7.0+
 }
 
 let cached: ExportSnapshot | null | undefined;
@@ -89,6 +90,7 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
   const parts = url.pathname.replace(/^\/api\/?/, "").split("/").map(decodeURIComponent);
   const method = (init?.method ?? "GET").toUpperCase();
   if (parts[0] === "positions" && method !== "GET") return { ok: true, read_only: true };
+  if (method !== "GET") throw new OfflineError(403, "This exported file is read-only.");
 
   switch (parts[0]) {
     case "health":
@@ -107,6 +109,10 @@ export function offlineApi(d: ExportSnapshot, path: string, init?: RequestInit):
       if (parts.length === 2) return s;
       const sc = d.scripts[s.name];
       if (parts[2] === "snapshots") return { snapshots: sc?.snapshots ?? [] };
+      if (parts[2] === "gnn") {
+        return d.gnn?.[s.name] ?? { step: s.name, models: [], datasets: [], files: [], warnings: [], dataset_files: [],
+          can_introspect: false, introspect_note: "" };
+      }
       if (parts[2] === "script") {
         if (!d.include_scripts) throw new OfflineError(404, "Scripts were left out of this export (--no-scripts).");
         const rid = q.get("run_id");

@@ -10,7 +10,7 @@ from mltree_mcp import Store
 from mltree_mcp.runner import (
     RunManager, build_args, detect_cli, flatten_metrics, grid_combinations, parse_grid_text, parse_metric_line,
 )
-from mltree_mcp.store import MLTreeError
+from mltree_mcp.store import SCHEMA_VERSION, MLTreeError
 
 
 def test_detect_argparse_flags():
@@ -227,5 +227,5 @@ def test_migrates_v1_db(tmp_path):
     sw = s2.log_run("a", kind="sweep")
     assert s2.get_run(sw["id"])["kind"] == "sweep"
     with sqlite3.connect(db) as c:
-        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+        assert c.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(SCHEMA_VERSION)
     json.dumps(s2.run_tree())  # still serialisable

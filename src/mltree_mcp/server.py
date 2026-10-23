@@ -39,7 +39,8 @@ steps/split.py); call connect_steps to wire data flow; call log_run after every 
 (use parent_run_id when a run is a variation of an earlier one, e.g. an HPO trial). Call open_map to give the user
 the viewer URL, and export_map when they want a single offline HTML file to send someone (it includes the scripts
 unless include_scripts=false). Call get_pipeline before changing the workflow, and best_run / list_runs to answer questions about
-experiments. Paths are relative to the project root.
+experiments. Paths are relative to the project root. Record conclusions with add_note (on a step or run) and mark
+notable runs with tag_run (e.g. 'best', 'final').
 To execute a step AND record it in one go, call run_step (it launches the step's script with the given params, streams
 nothing back until it finishes or times out, and records params, script snapshot, exit status, duration, log and
 metrics; scripts can print `MLTREE_METRIC name=value` lines or write JSON to $MLTREE_METRICS_FILE). Use run_sweep for a
@@ -179,6 +180,61 @@ def compare_runs(
         if code_diff:
             slim["code_diff"] = st.code_diff(cmp["runs"][0]["id"], cmp["runs"][1]["id"])
         return slim
+
+    return _call(go)
+
+
+@mcp.tool()
+def add_note(
+    text: Annotated[str, Field(description="The note, plain text (markdown is fine); appended as a new paragraph")],
+    step: Annotated[str | None, Field(description="Note on this step (give step OR run_id)")] = None,
+    run_id: Annotated[str | None, Field(description="Note on this run (give step OR run_id)")] = None,
+    replace: Annotated[bool, Field(description="Replace the existing notes instead of appending")] = False,
+) -> dict[str, Any]:
+    """Add a note to a step or a run, e.g. why a run failed, what a step assumes, or a conclusion from a comparison.
+    Notes show in the viewer (where the user can edit them), in get_pipeline / list_runs and in the HTML export."""
+    return _call(lambda: _store().add_note(text, step=step, run_id=run_id, replace=replace))
+
+
+@mcp.tool()
+def tag_run(
+    run_id: Annotated[str, Field(description="The run to tag")],
+    add: Annotated[list[str] | None, Field(description="Tags to add, e.g. ['best', 'paper-fig-3']")] = None,
+    remove: Annotated[list[str] | None, Field(description="Tags to remove")] = None,
+) -> dict[str, Any]:
+    """Add or remove tags on a run (e.g. 'baseline', 'best', 'final'). The tree can highlight runs by tag."""
+    def go() -> dict[str, Any]:
+        st = _store()
+        run = st.tag_run(run_id, add=add, remove=remove)
+        return {"run_id": run["id"], "step": run["step"], "tags": run["tags"], "tags_in_use": st.tags_in_use()}
+
+    return _call(go)
+
+
+@mcp.tool()
+def gnn_summary(
+    step: Annotated[str | None, Field(description="One step in full (default: every step with GNN models or graph data)")] = None,
+    introspect: Annotated[bool, Field(description="Also load the step's .pt/.bin graph files to compute dataset stats. "
+                                      "Only when the user asked for it: it runs torch.load / dgl.load_graphs in a "
+                                      "subprocess with the project's Python, and unpickling can execute code")] = False,
+) -> dict[str, Any]:
+    """GNN view of a step: the model architecture read statically from its script and imported project modules
+    (conv layer types and counts, hidden sizes, heads, pooling, head, forward order; nothing is imported or run),
+    dataset classes it constructs (TUDataset, MoleculeNet, QM9, OGB, DGL ...), and cached dataset stats (graphs,
+    nodes/edges per graph, feature dims, classes or target range, self loops, isolated nodes)."""
+    def go() -> dict[str, Any]:
+        from . import gnn
+        from .runner import run_allowed_by_env
+
+        st = _store()
+        if introspect:
+            if not step:
+                raise MLTreeError("introspect=true needs a step")
+            if not run_allowed_by_env():
+                raise MLTreeError("Dataset introspection is disabled here (MLTREE_ALLOW_RUN=0): it loads project files "
+                                  "with torch. Use `mltree-mcp gnn --step NAME --introspect` in a terminal instead.")
+            gnn.introspect(st, step)
+        return gnn.summary(st, step)
 
     return _call(go)
 
@@ -503,6 +559,13 @@ def main(argv: list[str] | None = None) -> None:
     ex.add_argument("--project", dest="view_project", help="Project directory")
     ex.add_argument("-o", "--output", default=None, help="Output file or folder (default: ./<project>-mltree.html)")
     ex.add_argument("--no-scripts", action="store_true", help="Leave the step scripts out of the file")
+    g = sub.add_parser("gnn", help="Show the GNN view of a step (architecture + dataset stats)")
+    g.add_argument("--project", dest="view_project", help="Project directory")
+    g.add_argument("--step", default=None, help="Step name (default: every step with GNN content)")
+    g.add_argument("--introspect", action="store_true",
+                   help="Load the step's .pt/.bin graph files with the project's Python to compute dataset stats "
+                        "(unpickling can run code: only for data you trust)")
+    g.add_argument("--python", default=None, help="Interpreter for --introspect (default: as for runs)")
     args = parser.parse_args(argv)
 
     project = getattr(args, "view_project", None) or args.project
@@ -537,6 +600,21 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Wrote {res['path']} ({res['size']}; {res['steps']} steps, {res['runs']} runs, "
               f"{'scripts included' if res['scripts_included'] else 'no scripts'})")
         print(res["note"])
+        return
+    if args.command == "gnn":
+        from . import gnn
+
+        try:
+            st = _store()
+            if args.introspect:
+                if not args.step:
+                    raise MLTreeError("--introspect needs --step")
+                gnn.introspect(st, args.step, python=args.python)
+            res = gnn.summary(st, args.step)
+        except MLTreeError as exc:
+            print(f"mltree-mcp: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        print(json.dumps(res, indent=2, default=str))
         return
     if args.command == "view":
         from .viewer import DEFAULT_HOST, DEFAULT_PORT, serve

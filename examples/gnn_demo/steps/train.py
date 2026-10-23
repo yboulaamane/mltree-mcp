@@ -9,6 +9,15 @@ import sys
 from _common import embed, load, save
 
 alpha = float(sys.argv[1]) if len(sys.argv) > 1 else 1.0
+hidden = 64
+
+try:  # the real PyG model (see gcn_model.py); the toy ridge regression below runs without torch
+    from gcn_model import MolGCN
+
+    model = MolGCN(hidden_channels=hidden, num_layers=3)
+    print(f"MolGCN: {sum(p.numel() for p in model.parameters())} parameters (not trained by this toy step)")
+except ImportError:
+    model = None
 
 
 def solve(A: list[list[float]], b: list[float]) -> list[float]:

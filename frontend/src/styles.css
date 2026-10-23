@@ -225,3 +225,32 @@ table.diff td.code-line.empty { background: var(--soft); }
 table.diff tr.hunk td { background: color-mix(in srgb, var(--pick) 10%, transparent); color: var(--muted); }
 table.diff .sign { display: inline-block; width: 14px; color: var(--muted); }
 .add-n { color: var(--s-succeeded); font-weight: 600; } .del-n { color: var(--s-failed); font-weight: 600; }
+
+/* 0.7.0: notes, tags, GNN */
+.prewrap { white-space: pre-wrap; word-break: break-word; }
+.notes textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg); color: var(--fg); resize: vertical; }
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.note-dot { color: var(--accent); font-size: 11px; margin-left: 2px; cursor: help; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0 8px; }
+.chip.tag { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); margin-left: 4px; }
+.chip.tag.sys { opacity: .7; }
+.chip.tag.tiny { font-size: 10px; padding: 0 4px; }
+.chip-x { border: 0; background: none; padding: 0 0 0 4px; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; }
+.chip-x:hover { color: var(--fg); }
+.tag-input { width: 90px; font-size: 12px; padding: 2px 6px; border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--fg); }
+.run-node.dim { opacity: .28; }
+.gnn-chip { font-size: 10.5px; margin: 2px 0 0; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, #8b5cf6 14%, transparent);
+  color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gnn-icon { color: #8b5cf6; margin-right: 4px; }
+.gnn-section .gnn-model { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+.gnn-label { font-weight: 600; margin: 2px 0; color: #7c3aed; }
+[data-theme="dark"] .gnn-label { color: #a78bfa; }
+.gnn-layers, .gnn-stats { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.gnn-layers th, .gnn-layers td, .gnn-stats th, .gnn-stats td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+.gnn-layers .num, .gnn-stats .num { text-align: right; }
+.gnn-layers tr.fam-conv td:first-child { box-shadow: inset 3px 0 #8b5cf6; }
+.gnn-layers tr.fam-pool td:first-child { box-shadow: inset 3px 0 #06b6d4; }
+.gnn-flow { font-size: 12px; line-height: 1.8; }
+.gnn-flow .arrow { color: var(--muted); }
+.step-node.has-gnn { height: 112px; }

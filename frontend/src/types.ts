@@ -21,6 +21,49 @@ export interface StepNode {
   run_count: number;
   latest_run: LatestRun | null;
   data?: NodeData | null;
+  notes?: string;                 // 0.7.0+
+  gnn?: GnnBadge | null;          // 0.7.0+
+}
+
+export interface GnnBadge { label?: string; model?: string; datasets?: string[]; graphs?: number }
+
+export interface GnnDim { text: string; value?: number | string | null }
+
+export interface GnnLayer {
+  attr: string; type: string; family: string; lib?: string; line?: number; file?: string; call?: string;
+  repeat?: number | string; in?: GnnDim; out?: GnnDim; heads?: GnnDim; p?: GnnDim; mlp?: string[];
+}
+
+export interface GnnModel {
+  name: string; kind: "class" | "prebuilt"; file: string; line: number; bases?: string[];
+  layers?: GnnLayer[]; forward?: string[]; call?: string;
+  instantiated?: { file: string; line: number; call: string } | null;
+  summary: { label: string; conv: Record<string, number>; num_conv_layers: number; hidden: string[]; heads: string[];
+    pooling: string[]; head: string | null; is_gnn: boolean };
+}
+
+export interface GnnRange { min: number; mean: number; max: number; total: number }
+
+export interface GnnStats {
+  format?: string; error?: string; num_graphs?: number; num_nodes?: number; num_edges?: number;
+  nodes?: GnnRange; edges?: GnnRange; node_features?: number | null; edge_features?: number | null;
+  self_loops?: number; isolated_nodes?: number; avg_degree?: number; is_directed?: boolean;
+  labels?: { task?: string; num_classes?: number; class_counts?: Record<string, number>; missing?: number; targets?: number; min?: number; max?: number;
+    mean?: number; std?: number; shape?: number[] } | null;
+  masks?: Record<string, number>; level?: string; parameters?: number; tensors?: number; loaded_with?: string; versions?: Record<string, string>;
+  truncated?: boolean;
+}
+
+export interface GnnView {
+  step: string;
+  models: GnnModel[];
+  datasets: { class: string; name?: string | null; root?: string | null; lib?: string; file: string; line: number; call?: string }[];
+  files: string[];
+  warnings: string[];
+  dataset_files: { path: string; bytes?: number; version?: string | null; stats: GnnStats | null; computed_at: string | null;
+    python: string | null; stale: boolean; missing?: boolean }[];
+  can_introspect: boolean;
+  introspect_note: string;
 }
 
 /** Content fingerprint of one data file/dir (SHA-256; `version` = first 12 hex chars). */
@@ -85,6 +128,7 @@ export interface Pipeline {
   nodes: StepNode[];
   edges: Edge[];
   order: string[];
+  tags?: Record<string, number>;  // 0.7.0+: tag -> number of runs
 }
 
 export interface Artifact {

@@ -6,6 +6,8 @@ import RunsTable from "./RunsTable";
 import type { Theme } from "./App";
 import { RUN_OFF_HINT, runnable, useRuns } from "./runctx";
 import DataSection from "./DataSection";
+import GnnSection from "./GnnSection";
+import { NotesEditor } from "./Notes";
 
 const CodeView = lazy(() => import("./CodeView"));
 
@@ -54,6 +56,10 @@ export default function SidePanel(props: {
           ? Object.entries(step.params).map(([k, v]) => <code key={k} className="chip">{k}={fmtVal(v)}</code>)
           : <em>–</em>}</div>
       </div>
+
+      <NotesEditor notes={step.notes ?? ""} path={`/api/steps/${enc}/notes`} label="Step notes" />
+
+      <GnnSection step={step} revision={revision} />
 
       <DataSection step={step} revision={revision} onRun={(id) => { if (!props.selected.includes(id)) props.toggleRun(id); }} />
 

@@ -121,6 +121,48 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
         if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0].lower() not in LOOPBACK | {"testserver"}:
             raise RunForbidden(f"Cross-origin run request from {origin} refused.")
 
+    def write_guard(request: Request) -> None:
+        """Edits (notes, tags) need no --allow-run, but only the viewer page on localhost may make them
+        (custom header + loopback Host + same-origin: blocks drive-by requests and DNS rebinding)."""
+        host = (request.headers.get("host") or "").rsplit(":", 1)[0].lower()
+        if host not in LOOPBACK and host != "testserver":
+            raise RunForbidden(f"Edits are only accepted on localhost (Host: {host!r}); use an SSH tunnel.")
+        if request.headers.get("x-mltree") != "1":
+            raise RunForbidden("Missing X-MLTree header.")
+        origin = request.headers.get("origin")
+        if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0].lower() not in LOOPBACK | {"testserver"}:
+            raise RunForbidden(f"Cross-origin edit from {origin} refused.")
+
+    async def step_notes(request: Request):
+        write_guard(request)
+        body = await body_of(request)
+        return await asyncio.to_thread(store().set_step_notes, request.path_params["step"], body.get("notes", ""))
+
+    async def run_notes(request: Request):
+        write_guard(request)
+        body = await body_of(request)
+        return await asyncio.to_thread(store().set_run_notes, request.path_params["run_id"], body.get("notes", ""))
+
+    async def run_tags(request: Request):
+        write_guard(request)
+        body = await body_of(request)
+        if "tags" in body:
+            return await asyncio.to_thread(store().tag_run, request.path_params["run_id"], tags=body["tags"])
+        return await asyncio.to_thread(store().tag_run, request.path_params["run_id"], add=body.get("add"),
+                                       remove=body.get("remove"))
+
+    def gnn_view(request: Request):
+        from . import gnn
+
+        return gnn.step_view(store(), request.path_params["step"], run_allowed=allow_run)
+
+    async def gnn_introspect(request: Request):
+        guard(request)  # loads project files with torch: same opt-in as running a step
+        from . import gnn
+
+        await asyncio.to_thread(gnn.introspect, store(), request.path_params["step"], manager.python)
+        return await asyncio.to_thread(gnn.step_view, store(), request.path_params["step"], allow_run)
+
     async def body_of(request: Request) -> dict[str, Any]:
         try:
             body = await request.json()
@@ -311,12 +353,17 @@ def create_app(project: str | Path | None = None, poll_interval: float = 1.0, al
         Route("/api/steps/{step}/script", handle(script)),
         Route("/api/steps/{step}/snapshots", handle(snapshots)),
         Route("/api/steps/{step}/plan", handle(plan)),
+        Route("/api/steps/{step}/notes", handle(step_notes), methods=["PUT"]),
+        Route("/api/steps/{step}/gnn", handle(gnn_view)),
+        Route("/api/steps/{step}/gnn/introspect", handle(gnn_introspect), methods=["POST"]),
         Route("/api/steps/{step}/run", handle(run_step), methods=["POST"]),
         Route("/api/steps/{step}/sweep", handle(sweep), methods=["POST"]),
         Route("/api/active", handle(active)),
         Route("/api/runs", handle(runs)),
         Route("/api/runs/{run_id}", handle(run)),
         Route("/api/runs/{run_id}/cancel", handle(cancel), methods=["POST"]),
+        Route("/api/runs/{run_id}/notes", handle(run_notes), methods=["PUT"]),
+        Route("/api/runs/{run_id}/tags", handle(run_tags), methods=["PUT"]),
         Route("/api/runs/{run_id}/log", handle(run_log)),
         Route("/api/runs/{run_id}/log/stream", log_stream),
         Route("/api/runs/{run_id}/history", handle(history)),

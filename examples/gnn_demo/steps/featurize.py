@@ -6,7 +6,7 @@ aromatic lowercase atoms, but not stereo or charges).
 """
 import re
 
-from _common import load, save
+from _common import OUT, load, save
 
 ELEMENTS = ["C", "N", "O", "Cl", "S", "F"]
 
@@ -64,3 +64,18 @@ for m in load("molecules.json"):
     graphs.append(g)
 save("graphs.json", graphs)
 print(f"featurized {len(graphs)} graphs with {to_graph.__name__}")
+
+try:  # also write a PyTorch Geometric dataset when torch_geometric is installed
+    import torch
+    from torch_geometric.data import Data, InMemoryDataset
+except ImportError:
+    pass
+else:
+    def to_data(g: dict) -> Data:
+        pairs = [(a, b) for a, b, _ in g["edges"]] + [(b, a) for a, b, _ in g["edges"]]
+        edge_index = torch.tensor(pairs, dtype=torch.long).t().reshape(2, -1)
+        return Data(x=torch.tensor(g["x"]), edge_index=edge_index, y=torch.tensor([g["y"]]))
+
+    data, slices = InMemoryDataset.collate([to_data(g) for g in graphs])
+    torch.save((data.to_dict(), slices), OUT / "graphs.pt")
+    print("wrote data/processed/graphs.pt (PyG)")
